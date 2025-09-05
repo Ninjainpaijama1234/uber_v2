@@ -28,8 +28,8 @@ def _wrap_st_fn(fn):
 
 # Patch common renderers so legacy code & libs won't warn
 for _name in [
-    "plotly_chart","dataframe","table","altair_chart","pydeck_chart",
-    "map","line_chart","bar_chart","area_chart","pyplot",
+    "plotly_chart", "dataframe", "table", "altair_chart", "pydeck_chart",
+    "map", "line_chart", "bar_chart", "area_chart", "pyplot",
 ]:
     if hasattr(st, _name):
         setattr(st, _name, _wrap_st_fn(getattr(st, _name)))
@@ -528,11 +528,11 @@ with tabs[2]:
     dow = df_f["weekday"].value_counts().sort_index()
     c3, c4 = st.columns(2)
     with c3:
-        fig = px.bar(hh, title="By Hour of Day", labels={"index":"Hour","value":"Trips"}, color_discrete_sequence=[DEMAND_COLOR])
+        fig = px.bar(hh, title="By Hour of Day", labels={"index": "Hour", "value": "Trips"}, color_discrete_sequence=[DEMAND_COLOR])
         st.plotly_chart(fig, use_container_width=True)
     with c4:
-        dow_map = {0:"Mon",1:"Tue",2:"Wed",3:"Thu",4:"Fri",5:"Sat",6:"Sun"}
-        fig = px.bar(dow.rename(index=dow_map), title="By Day of Week", labels={"index":"Day","value":"Trips"}, color_discrete_sequence=[DEMAND_COLOR])
+        dow_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+        fig = px.bar(dow.rename(index=dow_map), title="By Day of Week", labels={"index": "Day", "value": "Trips"}, color_discrete_sequence=[DEMAND_COLOR])
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
@@ -547,7 +547,7 @@ with tabs[2]:
     heat_pick_dow = (df_f.assign(cnt=1)
                      .pivot_table(index="Pickup Location", columns="weekday", values="cnt", aggfunc="sum", fill_value=0))
     heat_pick_dow = heat_pick_dow.loc[heat_pick_dow.sum(axis=1).sort_values(ascending=False).head(20).index]
-    heat_pick_dow.columns = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+    heat_pick_dow.columns = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     st.plotly_chart(px.imshow(heat_pick_dow, aspect="auto", color_continuous_scale="Blues",
                               title="Pickup × Day-of-Week Heat (Top 20 Pickups)"), use_container_width=True)
 
@@ -566,16 +566,16 @@ with tabs[3]:
 
     st.markdown("---")
     st.markdown("### By Location & Vehicle")
-    gv = df_f.groupby(["Pickup Location","Vehicle Type"]).agg(
-        vt=("avg_vtat","mean"),
-        ct=("avg_ctat","mean"),
-        n=("Booking ID","count")
+    gv = df_f.groupby(["Pickup Location", "Vehicle Type"]).agg(
+        vt=("avg_vtat", "mean"),
+        ct=("avg_ctat", "mean"),
+        n=("Booking ID", "count")
     ).reset_index().sort_values("n", ascending=False).head(30)
     st.dataframe(gv.round(2), use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Correlations")
-    corr_cols = ["avg_vtat","avg_ctat","driver_ratings","customer_rating","booking_value","ride_distance","will_complete"]
+    corr_cols = ["avg_vtat", "avg_ctat", "driver_ratings", "customer_rating", "booking_value", "ride_distance", "will_complete"]
     cmat = df_f[corr_cols].replace(0, np.nan).corr()
     st.plotly_chart(px.imshow(cmat, text_auto=True, aspect="auto", color_continuous_scale="RdBu_r",
                               title="Correlation Matrix"), use_container_width=True)
@@ -630,13 +630,13 @@ with tabs[5]:
 
     st.markdown("---")
     st.markdown("### Correlations & Risk Flags")
-    r1 = df_f[["driver_ratings","avg_vtat","cancelled_by_driver"]].corr().iloc[0,1:].to_frame("corr")
+    r1 = df_f[["driver_ratings", "avg_vtat", "cancelled_by_driver"]].corr().iloc[0, 1:].to_frame("corr")
     st.write("**Driver Ratings vs VTAT & Driver Cancellations**")
     st.dataframe(r1.round(2), use_container_width=True)
 
     low_thr = st.slider("Low rating threshold", 1.0, 5.0, 3.5, 0.1)
-    seg = (df_f.assign(low_rate = (df_f["customer_rating"] > 0) & (df_f["customer_rating"] < low_thr))
-           .groupby(["Vehicle Type","time_bucket"])["low_rate"].mean().reset_index()
+    seg = (df_f.assign(low_rate=(df_f["customer_rating"] > 0) & (df_f["customer_rating"] < low_thr))
+           .groupby(["Vehicle Type", "time_bucket"])["low_rate"].mean().reset_index()
            .sort_values("low_rate", ascending=False).head(20))
     st.plotly_chart(px.bar(seg, x="low_rate", y="Vehicle Type", color="time_bucket", orientation="h",
                            title=f"Probability of < {low_thr:.1f} Stars by Segment"), use_container_width=True)
@@ -646,7 +646,7 @@ with tabs[6]:
     st.markdown("## Incomplete Rides")
 
     inc_df = df_f[df_f["booking_status_canon"] == "Incomplete"]
-    share = len(inc_df)/len(df_f) if len(df_f) else 0
+    share = len(inc_df) / len(df_f) if len(df_f) else 0
     st.metric("Incomplete Share", f"{share:.2%}")
     st.markdown("### Reasons")
     bar_from_series(inc_df["reason_incomplete"].value_counts().head(20), "Top Incomplete Reasons", "Reason", color=RISK_COLOR)
@@ -664,16 +664,16 @@ with tabs[6]:
 def make_features_for_classification(data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     # Avoid leakage: exclude post-outcome fields (CTAT, ratings, explicit cancels, incomplete counts & reasons)
     X = data[[
-        "Vehicle Type","Pickup Location","Drop Location","Payment Method",
-        "hour","weekday","month","is_weekend","time_bucket",
-        "avg_vtat","ride_distance"
+        "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method",
+        "hour", "weekday", "month", "is_weekend", "time_bucket",
+        "avg_vtat", "ride_distance"
     ]].copy()
     y = data["will_complete"].copy()
 
     for c in ["Pickup Location", "Drop Location"]:
         X[c] = compress_categories(X[c].astype(str), top_n=30)
 
-    for c in ["Vehicle Type","Pickup Location","Drop Location","Payment Method","time_bucket"]:
+    for c in ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"]:
         X[c] = X[c].astype(str)
 
     return X, y
@@ -684,8 +684,8 @@ def time_aware_split(data: pd.DataFrame, test_size: float = 0.2) -> Tuple[pd.Dat
     return data.iloc[:cut].copy(), data.iloc[cut:].copy()
 
 def build_classifier(name: str):
-    num_cols = ["hour","weekday","month","is_weekend","avg_vtat","ride_distance"]
-    cat_cols = ["Vehicle Type","Pickup Location","Drop Location","Payment Method","time_bucket"]
+    num_cols = ["hour", "weekday", "month", "is_weekend", "avg_vtat", "ride_distance"]
+    cat_cols = ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"]
 
     pre = ColumnTransformer([
         ("num", StandardScaler(with_mean=False), num_cols),
@@ -725,7 +725,7 @@ def plot_roc(y_true, y_score):
     auc = roc_auc_score(y_true, y_score)
     fig, ax = plt.subplots()
     ax.plot(fpr, tpr, label=f"AUC={auc:.3f}")
-    ax.plot([0,1],[0,1],"--", alpha=0.5)
+    ax.plot([0, 1], [0, 1], "--", alpha=0.5)
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
     ax.set_title("ROC Curve")
@@ -745,14 +745,14 @@ def train_forecast(df_ts: pd.DataFrame, model_name: str, periods: int = 14):
         return pd.DataFrame({"ds": y.index, "yhat": y.values}), fc
     else:
         try:
-            model = sm.tsa.ARIMA(y, order=(2,1,2))
+            model = sm.tsa.ARIMA(y, order=(2, 1, 2))
             res = model.fit()
             fc = res.get_forecast(steps=periods)
             fc_df = pd.DataFrame({
                 "ds": pd.date_range(y.index[-1] + pd.Timedelta(days=1), periods=periods, freq="D"),
                 "yhat": fc.predicted_mean.values,
-                "yhat_lower": fc.conf_int().iloc[:,0].values,
-                "yhat_upper": fc.conf_int().iloc[:,1].values
+                "yhat_lower": fc.conf_int().iloc[:, 0].values,
+                "yhat_upper": fc.conf_int().iloc[:, 1].values
             })
             hist = pd.DataFrame({"ds": y.index, "yhat": y.values})
             return hist, fc_df
@@ -770,7 +770,132 @@ def regression_models(name: str):
 
 # ---------- Tab 8
 with tabs[7]:
-      st.markdown("---")
+    st.markdown("## ML Lab")
+
+    st.markdown("### A) Classification – Predict `will_complete`")
+    X_all, y_all = make_features_for_classification(df_f)
+    data_all = df_f.loc[X_all.index, ["timestamp"]].copy()
+    data_all["y"] = y_all.values
+    tr, te = time_aware_split(data_all, test_size=0.2)
+    X_train, y_train = X_all.loc[tr.index], y_all.loc[tr.index]
+    X_test, y_test = X_all.loc[te.index], y_all.loc[te.index]
+
+    pipe = build_classifier(clf_choice)
+    with st.spinner("Training classifier..."):
+        pipe.fit(X_train, y_train)
+    y_pred = pipe.predict(X_test)
+    if hasattr(pipe.named_steps["clf"], "predict_proba"):
+        y_prob = pipe.predict_proba(X_test)[:, 1]
+    else:
+        try:
+            y_score = pipe.decision_function(X_test)
+            y_prob = (y_score - y_score.min()) / (y_score.max() - y_score.min() + 1e-6)
+        except Exception:
+            y_prob = y_pred.astype(float)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Accuracy", f"{accuracy_score(y_test, y_pred):.3f}")
+    c2.metric("F1", f"{f1_score(y_test, y_pred):.3f}")
+    try:
+        rocauc = roc_auc_score(y_test, y_prob)
+        c3.metric("ROC AUC", f"{rocauc:.3f}")
+    except Exception:
+        c3.metric("ROC AUC", "—")
+    c4.metric("Test Size", f"{len(y_test):,}")
+
+    plot_confusion(y_test, y_pred)
+    try:
+        plot_roc(y_test, y_prob)
+    except Exception:
+        pass
+
+    st.markdown("#### Feature Importance / Coefficients")
+    try:
+        model = pipe.named_steps["clf"]
+        pre = pipe.named_steps["pre"]
+        oh: OneHotEncoder = pre.named_transformers_["cat"]
+        num_cols = pre.transformers_[0][2]
+        cat_cols = pre.transformers_[1][2]
+        feature_names = list(num_cols) + list(oh.get_feature_names_out(cat_cols))
+
+        if hasattr(model, "feature_importances_"):
+            fi = model.feature_importances_
+            imp_df = pd.DataFrame({"feature": feature_names, "importance": fi}).sort_values("importance", ascending=False).head(25)
+            st.plotly_chart(px.bar(imp_df, x="importance", y="feature", orientation="h", title="Top Features"), use_container_width=True)
+        elif hasattr(model, "coef_"):
+            coefs = model.coef_.ravel()
+            coef_df = pd.DataFrame({"feature": feature_names, "coef": coefs}).assign(abs_coef=lambda d: d["coef"].abs()).sort_values("abs_coef", ascending=False).head(25)
+            st.plotly_chart(px.bar(coef_df, x="coef", y="feature", orientation="h", title="Top Coefficients"), use_container_width=True)
+        else:
+            st.info("Model does not expose importances/coefficients.")
+    except Exception as e:
+        st.info(f"Feature importance unavailable: {e}")
+
+    # Optional SHAP (sampled)
+    shap_mod = ensure_shap()
+    if shap_mod is not None and hasattr(pipe.named_steps["clf"], "predict"):
+        with st.expander("SHAP (sampled)"):
+            sample_n = min(10000, len(X_test))
+            if sample_n >= 100:
+                Xs = X_test.sample(sample_n, random_state=RANDOM_STATE)
+                try:
+                    X_enc = pipe.named_steps["pre"].fit_transform(X_train)
+                    model = pipe.named_steps["clf"]
+                    explainer = shap_mod.Explainer(model, X_enc)  # type: ignore[attr-defined]
+                    vals = explainer(pipe.named_steps["pre"].transform(Xs))
+                    st.write("Mean |SHAP| (top 20)")
+                    shap_sum = np.abs(vals.values).mean(axis=0)
+                    top_idx = np.argsort(shap_sum)[::-1][:20]
+                    # Recompute names in case fitting transformed columns changed
+                    oh: OneHotEncoder = pipe.named_steps["pre"].named_transformers_["cat"]
+                    num_cols = pipe.named_steps["pre"].transformers_[0][2]
+                    cat_cols = pipe.named_steps["pre"].transformers_[1][2]
+                    feature_names = list(num_cols) + list(oh.get_feature_names_out(cat_cols))
+                    fidf = pd.DataFrame({"feature": [feature_names[i] for i in top_idx], "mean_abs_shap": shap_sum[top_idx]})
+                    st.plotly_chart(px.bar(fidf, x="mean_abs_shap", y="feature", orientation="h"), use_container_width=True)
+                except Exception as e:
+                    st.info(f"SHAP failed: {e}")
+            else:
+                st.info("Not enough samples for SHAP.")
+
+    pred_out = df_f.loc[te.index, ["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
+    pred_out["will_complete_true"] = y_test.values
+    pred_out["will_complete_pred"] = y_pred
+    pred_out["risk_score"] = 1 - y_prob
+    st.download_button("Download Predictions (CSV)", pred_out.to_csv(index=False).encode("utf-8"), "predictions.csv", "text/csv")
+
+    st.markdown("---")
+    st.markdown("### B) Forecasting – Demand (Daily)")
+    ts = df_f.set_index("timestamp").resample("D").size().reset_index(name="y").rename(columns={"timestamp": "ds"})
+    periods = st.slider("Forecast Horizon (days)", 7, 60, 14)
+    hist, fc = train_forecast(ts, fcast_choice, periods=periods)
+
+    if fcast_choice == "Prophet" and ensure_prophet() is not None and fc is not None:
+        fig = px.line(fc, x="ds", y="yhat", title="Forecast", color_discrete_sequence=[DEMAND_COLOR])
+        if "yhat_lower" in fc.columns:
+            fig.add_traces([
+                go.Scatter(x=fc["ds"], y=fc["yhat_upper"], line=dict(width=0), showlegend=False),
+                go.Scatter(x=fc["ds"], y=fc["yhat_lower"], line=dict(width=0), fill="tonexty",
+                           fillcolor="rgba(31,119,180,0.2)", showlegend=False)
+            ])
+        st.plotly_chart(fig, use_container_width=True)
+    elif fc is not None:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=hist["ds"], y=hist["yhat"], name="History"))
+        fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat"], name="Forecast"))
+        if "yhat_lower" in fc.columns:
+            fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat_upper"], line=dict(width=0), showlegend=False))
+            fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat_lower"], line=dict(width=0), fill="tonexty",
+                                     fillcolor="rgba(31,119,180,0.2)", showlegend=False))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No forecast generated.")
+
+    if fc is not None:
+        fcsv = (fc if "yhat" in fc.columns else hist).to_csv(index=False).encode("utf-8")
+        st.download_button("Download Forecast (CSV)", fcsv, "forecast.csv", "text/csv")
+
+    st.markdown("---")
     st.markdown("### C) Clustering – Customer Segmentation")
 
     # ---- Build base customer metrics
@@ -858,15 +983,64 @@ with tabs[7]:
     clus_csv = cust[["Customer ID", "cluster"] + feat_cols].to_csv(index=False).encode("utf-8")
     st.download_button("Download Clusters (CSV)", clus_csv, "clusters.csv", "text/csv")
 
+    st.markdown("---")
+    st.markdown("### D) Regression – Predict Booking Value")
+
+    Xr = df_f[[
+        "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method",
+        "hour", "weekday", "month", "is_weekend", "time_bucket",
+        "avg_vtat", "ride_distance"
+    ]].copy()
+    yr = df_f["booking_value"].fillna(0)
+
+    for c in ["Pickup Location", "Drop Location"]:
+        Xr[c] = compress_categories(Xr[c].astype(str), top_n=30)
+    for c in ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"]:
+        Xr[c] = Xr[c].astype(str)
+
+    Xr_train, Xr_test, yr_train, yr_test = train_test_split(Xr, yr, test_size=0.2, shuffle=False)
+
+    pre_r = ColumnTransformer([
+        ("num", StandardScaler(with_mean=False), ["hour", "weekday", "month", "is_weekend", "avg_vtat", "ride_distance"]),
+        ("cat", OneHotEncoder(handle_unknown="ignore"), ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"])
+    ])
+
+    reg = regression_models(regr_choice)
+    rpipe = Pipeline([("pre", pre_r), ("regr", reg)])
+    with st.spinner("Training regressor..."):
+        rpipe.fit(Xr_train, yr_train)
+    yhat = rpipe.predict(Xr_test)
+
+    rmse = mean_squared_error(yr_test, yhat, squared=False)
+    mae = mean_absolute_error(yr_test, yhat)
+    r2 = r2_score(yr_test, yhat)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("RMSE", f"{rmse:,.2f}")
+    c2.metric("MAE", f"{mae:,.2f}")
+    c3.metric("R²", f"{r2:.3f}")
+
+    fig = px.scatter(x=yr_test, y=yhat, labels={"x": "Actual", "y": "Predicted"}, title="Predicted vs Actual")
+    st.plotly_chart(fig, use_container_width=True)
+
+    fig_res, ax = plt.subplots()
+    ax.hist(yr_test - yhat, bins=40)
+    ax.set_title("Residuals")
+    st.pyplot(fig_res, use_container_width=True)
+
+    regr_out = df_f.loc[Xr_test.index, ["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
+    regr_out["actual_value"] = yr_test.values
+    regr_out["pred_value"] = yhat
+    st.download_button("Download Regression Predictions (CSV)", regr_out.to_csv(index=False).encode("utf-8"), "regression_predictions.csv", "text/csv")
+
 # ---------- Tab 9
 with tabs[8]:
     st.markdown("## Risk & Fraud")
 
     st.markdown("### Anomaly Detection")
     fr_cols = [
-        "avg_vtat","avg_ctat","ride_distance","booking_value",
-        "hour","weekday","is_weekend",
-        "cancelled_by_customer","cancelled_by_driver","incomplete_rides"
+        "avg_vtat", "avg_ctat", "ride_distance", "booking_value",
+        "hour", "weekday", "is_weekend",
+        "cancelled_by_customer", "cancelled_by_driver", "incomplete_rides"
     ]
     Xf = df_f[fr_cols].fillna(0).replace([np.inf, -np.inf], 0)
     scaler_f = StandardScaler()
@@ -878,7 +1052,7 @@ with tabs[8]:
     preds = iso.fit_predict(Xf_scaled)  # -1 anomaly, 1 normal
     scores = -iso.score_samples(Xf_scaled)  # higher = more anomalous
 
-    risk_df = df_f[["Booking ID","timestamp","Vehicle Type","Pickup Location","Drop Location","Payment Method","booking_value","ride_distance","booking_status_canon"]].copy()
+    risk_df = df_f[["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "booking_value", "ride_distance", "booking_status_canon"]].copy()
     risk_df["risk_score"] = scores
     risk_df["is_anomaly"] = (preds == -1).astype(int)
 
@@ -912,27 +1086,27 @@ with tabs[9]:
     e_incent_cxl = -0.4
     e_price_demand = -0.8
 
-    demand_factor = max(0.0, 1 + (price_up/100)*e_price_demand)
-    cxl_factor = (1 + (supply_up/100)*e_supply_cxl) * (1 + (incent_up/100)*e_incent_cxl)
+    demand_factor = max(0.0, 1 + (price_up / 100) * e_price_demand)
+    cxl_factor = (1 + (supply_up / 100) * e_supply_cxl) * (1 + (incent_up / 100) * e_incent_cxl)
     cxl_factor = max(0.5, min(1.2, cxl_factor))
 
     scen_total = int(base_total * demand_factor)
-    scen_comp_rate = min(0.995, base_comp_rate * (1/cxl_factor))
+    scen_comp_rate = min(0.995, base_comp_rate * (1 / cxl_factor))
     scen_completed = int(scen_total * scen_comp_rate)
-    scen_arpr = base_arpr * (1 + price_up/100)
+    scen_arpr = base_arpr * (1 + price_up / 100)
     scen_rev = scen_completed * scen_arpr
     scen_rating = (base_rating if not np.isnan(base_rating) else 4.5) + 0.01 * incent_up
     scen_rating = min(5.0, scen_rating)
 
     st.markdown("### Baseline vs Scenario")
     compare = pd.DataFrame({
-        "Metric": ["Total Bookings","Completion Rate","Completed Rides","ARPR","Total Revenue","Avg Customer Rating"],
+        "Metric": ["Total Bookings", "Completion Rate", "Completed Rides", "ARPR", "Total Revenue", "Avg Customer Rating"],
         "Baseline": [base_total, base_comp_rate, base_complete, base_arpr, base_rev, base_rating],
         "Scenario": [scen_total, scen_comp_rate, scen_completed, scen_arpr, scen_rev, scen_rating]
     })
     st.dataframe(compare.style.format({"Baseline": "{:,.2f}", "Scenario": "{:,.2f}"}).hide(axis="index"), use_container_width=True)
 
-    fig = px.bar(compare, x="Metric", y=["Baseline","Scenario"], barmode="group", title="Baseline vs Scenario",
+    fig = px.bar(compare, x="Metric", y=["Baseline", "Scenario"], barmode="group", title="Baseline vs Scenario",
                  color_discrete_sequence=px.colors.qualitative.Set2)
     st.plotly_chart(fig, use_container_width=True)
 
