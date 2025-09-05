@@ -770,148 +770,48 @@ def regression_models(name: str):
 
 # ---------- Tab 8
 with tabs[7]:
-    st.markdown("## ML Lab")
-
-    st.markdown("### A) Classification – Predict `will_complete`")
-    X_all, y_all = make_features_for_classification(df_f)
-    data_all = df_f.loc[X_all.index, ["timestamp"]].copy()
-    data_all["y"] = y_all.values
-    tr, te = time_aware_split(data_all, test_size=0.2)
-    X_train, y_train = X_all.loc[tr.index], y_all.loc[tr.index]
-    X_test, y_test = X_all.loc[te.index], y_all.loc[te.index]
-
-    pipe = build_classifier(clf_choice)
-    with st.spinner("Training classifier..."):
-        pipe.fit(X_train, y_train)
-    y_pred = pipe.predict(X_test)
-    if hasattr(pipe.named_steps["clf"], "predict_proba"):
-        y_prob = pipe.predict_proba(X_test)[:,1]
-    else:
-        try:
-            y_score = pipe.decision_function(X_test)
-            y_prob = (y_score - y_score.min()) / (y_score.max() - y_score.min() + 1e-6)
-        except Exception:
-            y_prob = y_pred.astype(float)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Accuracy", f"{accuracy_score(y_test, y_pred):.3f}")
-    c2.metric("F1", f"{f1_score(y_test, y_pred):.3f}")
-    try:
-        rocauc = roc_auc_score(y_test, y_prob)
-        c3.metric("ROC AUC", f"{rocauc:.3f}")
-    except Exception:
-        c3.metric("ROC AUC", "—")
-    c4.metric("Test Size", f"{len(y_test):,}")
-
-    plot_confusion(y_test, y_pred)
-    try:
-        plot_roc(y_test, y_prob)
-    except Exception:
-        pass
-
-    st.markdown("#### Feature Importance / Coefficients")
-    try:
-        model = pipe.named_steps["clf"]
-        pre = pipe.named_steps["pre"]
-        oh: OneHotEncoder = pre.named_transformers_["cat"]
-        num_cols = pre.transformers_[0][2]
-        cat_cols = pre.transformers_[1][2]
-        feature_names = list(num_cols) + list(oh.get_feature_names_out(cat_cols))
-
-        if hasattr(model, "feature_importances_"):
-            fi = model.feature_importances_
-            imp_df = pd.DataFrame({"feature": feature_names, "importance": fi}).sort_values("importance", ascending=False).head(25)
-            st.plotly_chart(px.bar(imp_df, x="importance", y="feature", orientation="h", title="Top Features"), use_container_width=True)
-        elif hasattr(model, "coef_"):
-            coefs = model.coef_.ravel()
-            coef_df = pd.DataFrame({"feature": feature_names, "coef": coefs}).assign(abs_coef=lambda d: d["coef"].abs()).sort_values("abs_coef", ascending=False).head(25)
-            st.plotly_chart(px.bar(coef_df, x="coef", y="feature", orientation="h", title="Top Coefficients"), use_container_width=True)
-        else:
-            st.info("Model does not expose importances/coefficients.")
-    except Exception as e:
-        st.info(f"Feature importance unavailable: {e}")
-
-    # Optional SHAP (sampled)
-    shap_mod = ensure_shap()
-    if shap_mod is not None and hasattr(pipe.named_steps["clf"], "predict"):
-        with st.expander("SHAP (sampled)"):
-            sample_n = min(10000, len(X_test))
-            if sample_n >= 100:
-                Xs = X_test.sample(sample_n, random_state=RANDOM_STATE)
-                try:
-                    X_enc = pipe.named_steps["pre"].fit_transform(X_train)
-                    model = pipe.named_steps["clf"]
-                    explainer = shap_mod.Explainer(model, X_enc)  # type: ignore[attr-defined]
-                    vals = explainer(pipe.named_steps["pre"].transform(Xs))
-                    st.write("Mean |SHAP| (top 20)")
-                    shap_sum = np.abs(vals.values).mean(axis=0)
-                    top_idx = np.argsort(shap_sum)[::-1][:20]
-                    # Recompute names in case fitting transformed columns changed
-                    oh: OneHotEncoder = pipe.named_steps["pre"].named_transformers_["cat"]
-                    num_cols = pipe.named_steps["pre"].transformers_[0][2]
-                    cat_cols = pipe.named_steps["pre"].transformers_[1][2]
-                    feature_names = list(num_cols) + list(oh.get_feature_names_out(cat_cols))
-                    fidf = pd.DataFrame({"feature":[feature_names[i] for i in top_idx], "mean_abs_shap": shap_sum[top_idx]})
-                    st.plotly_chart(px.bar(fidf, x="mean_abs_shap", y="feature", orientation="h"), use_container_width=True)
-                except Exception as e:
-                    st.info(f"SHAP failed: {e}")
-            else:
-                st.info("Not enough samples for SHAP.")
-
-    pred_out = df_f.loc[te.index, ["Booking ID","timestamp","Vehicle Type","Pickup Location","Drop Location","Payment Method"]].copy()
-    pred_out["will_complete_true"] = y_test.values
-    pred_out["will_complete_pred"] = y_pred
-    pred_out["risk_score"] = 1 - y_prob
-    st.download_button("Download Predictions (CSV)", pred_out.to_csv(index=False).encode("utf-8"), "predictions.csv", "text/csv")
-
-    st.markdown("---")
-    st.markdown("### B) Forecasting – Demand (Daily)")
-    ts = df_f.set_index("timestamp").resample("D").size().reset_index(name="y").rename(columns={"timestamp":"ds"})
-    periods = st.slider("Forecast Horizon (days)", 7, 60, 14)
-    hist, fc = train_forecast(ts, fcast_choice, periods=periods)
-
-    if fcast_choice == "Prophet" and ensure_prophet() is not None and fc is not None:
-        fig = px.line(fc, x="ds", y="yhat", title="Forecast", color_discrete_sequence=[DEMAND_COLOR])
-        if "yhat_lower" in fc.columns:
-            fig.add_traces([
-                go.Scatter(x=fc["ds"], y=fc["yhat_upper"], line=dict(width=0), showlegend=False),
-                go.Scatter(x=fc["ds"], y=fc["yhat_lower"], line=dict(width=0), fill="tonexty",
-                           fillcolor="rgba(31,119,180,0.2)", showlegend=False)
-            ])
-        st.plotly_chart(fig, use_container_width=True)
-    elif fc is not None:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=hist["ds"], y=hist["yhat"], name="History"))
-        fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat"], name="Forecast"))
-        if "yhat_lower" in fc.columns:
-            fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat_upper"], line=dict(width=0), showlegend=False))
-            fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat_lower"], line=dict(width=0), fill="tonexty",
-                                     fillcolor="rgba(31,119,180,0.2)", showlegend=False))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No forecast generated.")
-
-    if fc is not None:
-        fcsv = (fc if "yhat" in fc.columns else hist).to_csv(index=False).encode("utf-8")
-        st.download_button("Download Forecast (CSV)", fcsv, "forecast.csv", "text/csv")
-
-    st.markdown("---")
+      st.markdown("---")
     st.markdown("### C) Clustering – Customer Segmentation")
 
-    cust = df_f.groupby("Customer ID").agg(
-        freq=("Booking ID","count"),
-        avg_value=("booking_value", lambda s: s.loc[(df_f.loc[s.index, "booking_status_canon"]=="Completed")].mean() if len(s)>0 else 0),
-        avg_distance=("ride_distance","mean"),
+    # ---- Build base customer metrics
+    cust = df_f.groupby("Customer ID", observed=False).agg(
+        freq=("Booking ID", "count"),
+        # Mean booking value for completed rides only (per customer)
+        avg_value=("booking_value", lambda s: s[df_f.loc[s.index, "booking_status_canon"].eq("Completed")].mean()),
+        avg_distance=("ride_distance", "mean"),
         cancel_rate=("will_complete", lambda s: 1.0 - s.mean()),
-        u_payment=("Payment Method", lambda s: s.mode().iloc[0] if len(s)>0 else "Unknown")
+        # Most frequent payment (fallback to "Unknown")
+        u_payment=("Payment Method", lambda s: (s.astype(str).mode().iloc[0] if len(s) and not s.mode().empty else "Unknown")),
     ).reset_index()
 
-    pm_share = df_f.pivot_table(index="Customer ID", columns="Payment Method", values="Booking ID", aggfunc="count", fill_value=0)
-    pm_share = pm_share.div(pm_share.sum(axis=1), axis=0).reset_index().rename_axis(None, axis=1)
-    cust = cust.merge(pm_share, on="Customer ID", how="left").fillna(0)
+    # ---- Payment-method share matrix (row-normalized)
+    pm_counts = df_f.pivot_table(
+        index="Customer ID",
+        columns="Payment Method",
+        values="Booking ID",
+        aggfunc="count",
+        fill_value=0,
+    )
+    denom = pm_counts.sum(axis=1).replace(0, np.nan)        # avoid 0/0
+    pm_share = pm_counts.div(denom, axis=0).reset_index()   # shares in [0,1]; NaN where denom=0
 
-    feat_cols = ["freq","avg_value","avg_distance","cancel_rate"] + [c for c in pm_share.columns if c!="Customer ID"]
-    Xc = cust[feat_cols].copy().fillna(0)
+    # ---- Merge; fill only numeric columns (avoid categorical/object fillna TypeError)
+    cust = cust.merge(pm_share, on="Customer ID", how="left")
+    num_cols_cust = cust.select_dtypes(include=[np.number]).columns
+    cust[num_cols_cust] = cust[num_cols_cust].fillna(0)
+
+    # Ensure u_payment is clean text (no NaN strings)
+    if "u_payment" in cust.columns:
+        cust["u_payment"] = cust["u_payment"].astype(str).replace({"nan": "Unknown", "NaN": "Unknown"})
+
+    # ---- Feature matrix for clustering
+    payment_cols = [c for c in pm_share.columns if c != "Customer ID"]
+    feat_cols = ["freq", "avg_value", "avg_distance", "cancel_rate"] + payment_cols
+
+    # Coerce to numeric just in case and fill any residual NaNs with 0
+    Xc = cust[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+
+    # Scale + cluster
     scaler = StandardScaler()
     Xc_scaled = scaler.fit_transform(Xc)
 
@@ -930,6 +830,8 @@ with tabs[7]:
         labels = clus.fit_predict(Xc_scaled)
 
     cust["cluster"] = labels
+
+    # Quality metric (when applicable)
     if len(set(labels)) > 1 and -1 not in set(labels):
         try:
             sil = silhouette_score(Xc_scaled, labels)
@@ -940,70 +842,21 @@ with tabs[7]:
     from sklearn.decomposition import PCA
     pca = PCA(n_components=2, random_state=RANDOM_STATE)
     Xp = pca.fit_transform(Xc_scaled)
-    viz = pd.DataFrame({"pc1": Xp[:,0], "pc2": Xp[:,1], "cluster": labels})
+    viz = pd.DataFrame({"pc1": Xp[:, 0], "pc2": Xp[:, 1], "cluster": labels})
     st.plotly_chart(px.scatter(viz, x="pc1", y="pc2", color="cluster", title="Cluster Scatter (PCA)"), use_container_width=True)
 
     st.markdown("#### Cluster Personas")
-    personas = cust.groupby("cluster").agg(
-        n=("Customer ID","count"),
-        freq=("freq","mean"),
-        avg_value=("avg_value","mean"),
-        avg_distance=("avg_distance","mean"),
-        cancel_rate=("cancel_rate","mean")
+    personas = cust.groupby("cluster", observed=False).agg(
+        n=("Customer ID", "count"),
+        freq=("freq", "mean"),
+        avg_value=("avg_value", "mean"),
+        avg_distance=("avg_distance", "mean"),
+        cancel_rate=("cancel_rate", "mean"),
     ).round(2).reset_index()
     st.dataframe(personas, use_container_width=True)
 
-    clus_csv = cust[["Customer ID","cluster"] + feat_cols].to_csv(index=False).encode("utf-8")
+    clus_csv = cust[["Customer ID", "cluster"] + feat_cols].to_csv(index=False).encode("utf-8")
     st.download_button("Download Clusters (CSV)", clus_csv, "clusters.csv", "text/csv")
-
-    st.markdown("---")
-    st.markdown("### D) Regression – Predict Booking Value")
-
-    Xr = df_f[[
-        "Vehicle Type","Pickup Location","Drop Location","Payment Method",
-        "hour","weekday","month","is_weekend","time_bucket",
-        "avg_vtat","ride_distance"
-    ]].copy()
-    yr = df_f["booking_value"].fillna(0)
-
-    for c in ["Pickup Location", "Drop Location"]:
-        Xr[c] = compress_categories(Xr[c].astype(str), top_n=30)
-    for c in ["Vehicle Type","Pickup Location","Drop Location","Payment Method","time_bucket"]:
-        Xr[c] = Xr[c].astype(str)
-
-    Xr_train, Xr_test, yr_train, yr_test = train_test_split(Xr, yr, test_size=0.2, shuffle=False)
-
-    pre_r = ColumnTransformer([
-        ("num", StandardScaler(with_mean=False), ["hour","weekday","month","is_weekend","avg_vtat","ride_distance"]),
-        ("cat", OneHotEncoder(handle_unknown="ignore"), ["Vehicle Type","Pickup Location","Drop Location","Payment Method","time_bucket"])
-    ])
-
-    reg = regression_models(regr_choice)
-    rpipe = Pipeline([("pre", pre_r), ("regr", reg)])
-    with st.spinner("Training regressor..."):
-        rpipe.fit(Xr_train, yr_train)
-    yhat = rpipe.predict(Xr_test)
-
-    rmse = mean_squared_error(yr_test, yhat, squared=False)
-    mae = mean_absolute_error(yr_test, yhat)
-    r2 = r2_score(yr_test, yhat)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("RMSE", f"{rmse:,.2f}")
-    c2.metric("MAE", f"{mae:,.2f}")
-    c3.metric("R²", f"{r2:.3f}")
-
-    fig = px.scatter(x=yr_test, y=yhat, labels={"x":"Actual","y":"Predicted"}, title="Predicted vs Actual")
-    st.plotly_chart(fig, use_container_width=True)
-
-    fig_res, ax = plt.subplots()
-    ax.hist(yr_test - yhat, bins=40)
-    ax.set_title("Residuals")
-    st.pyplot(fig_res, use_container_width=True)
-
-    regr_out = df_f.loc[Xr_test.index, ["Booking ID","timestamp","Vehicle Type","Pickup Location","Drop Location","Payment Method"]].copy()
-    regr_out["actual_value"] = yr_test.values
-    regr_out["pred_value"] = yhat
-    st.download_button("Download Regression Predictions (CSV)", regr_out.to_csv(index=False).encode("utf-8"), "regression_predictions.csv", "text/csv")
 
 # ---------- Tab 9
 with tabs[8]:
