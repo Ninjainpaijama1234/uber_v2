@@ -1,0 +1,17 @@
+# requirements.txt
+# Pins compatible with Python 3.13 and Streamlit Cloud, avoiding the old llvmlite chain
+streamlit
+pandas
+numpy
+plotly
+matplotlib
+seaborn
+scikit-learn
+xgboost
+lightgbm
+prophet
+statsmodels
+pydeck
+pydantic
+shap
+# SHAP pinned to a Py3.13-ready wheel; this pulls numba>=0.61 & llvmlite>=0.44 wheels
