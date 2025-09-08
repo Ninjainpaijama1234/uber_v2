@@ -1,5 +1,5 @@
 # app.py
-# Lean, Cloud-friendly Streamlit app (no Prophet/SHAP/XGBoost/LightGBM)
+# Ultra-lean Streamlit app: no scikit-learn, no prophet/shap/xgboost/lightgbm.
 from __future__ import annotations
 
 import os
@@ -12,26 +12,13 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
-
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import (
-    confusion_matrix, roc_auc_score, roc_curve,
-    accuracy_score, f1_score, mean_squared_error, mean_absolute_error, r2_score,
-    silhouette_score
-)
-from sklearn.model_selection import train_test_split
-from sklearn.cluster import KMeans
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, IsolationForest
-from sklearn.linear import LogisticRegression, LinearRegression
-
 import statsmodels.api as sm
 
+# ------------------------------#
+# Constants & Config
+# ------------------------------#
+st.set_page_config(page_title="Uber NCR 2024 — Analytics & Decision Lab (Ultra-Lean)", page_icon="🚖", layout="wide")
 
-# ------------------------------#
-# Constants
-# ------------------------------#
 RANDOM_STATE = 42
 DATE_COL = "Date"
 TIME_COL = "Time"
@@ -53,6 +40,7 @@ RISK_COLOR = "#e76f51"
 FIN_COLOR = "#2a9d8f"
 CX_COLOR = "#9b5de5"
 
+np.random.seed(RANDOM_STATE)
 
 # ------------------------------#
 # Utilities
@@ -65,7 +53,6 @@ def _title_case_or_nan(x: any) -> Optional[str]:
         return np.nan
     return s.title()
 
-
 def time_bucket_from_hour(h: int) -> str:
     if 5 <= h < 12:
         return "Morning (05–11)"
@@ -76,21 +63,18 @@ def time_bucket_from_hour(h: int) -> str:
     else:
         return "Night (21–04)"
 
-
 def compress_categories(s: pd.Series, top_n: int = 30, other_label: str = "Other") -> pd.Series:
     top = s.value_counts().nlargest(top_n).index
     return s.where(s.isin(top), other_label)
 
-
 def safe_numeric(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
-
 
 def canonical_status(row: pd.Series) -> str:
     raw = str(row.get("Booking Status", "")).strip()
     cust_cxl = row.get("Cancelled Rides by Customer", 0)
     drv_cxl = row.get("Cancelled Rides by Driver", 0)
-    incomplete = row.get("Incomplete Rides", 0)
+    inc = row.get("Incomplete Rides", 0)
     if raw.lower() == "completed":
         return "Completed"
     if pd.to_numeric(pd.Series([cust_cxl]), errors="coerce").iloc[0] > 0 or "customer" in raw.lower():
@@ -99,29 +83,25 @@ def canonical_status(row: pd.Series) -> str:
         return "Driver Cancelled"
     if "no driver found" in raw.lower():
         return "No Driver Found"
-    if pd.to_numeric(pd.Series([incomplete]), errors="coerce").iloc[0] > 0 or "incomplete" in raw.lower():
+    if pd.to_numeric(pd.Series([inc]), errors="coerce").iloc[0] > 0 or "incomplete" in raw.lower():
         return "Incomplete"
     return raw if raw in CANONICAL_STATUSES else raw
 
-
 def revenue_mask_for_completed(status: pd.Series) -> pd.Series:
-    return (status == "Completed")
-
+    return status == "Completed"
 
 def find_default_csv() -> Optional[str]:
-    candidates = [
+    for p in [
         "ncr_ride_bookingsv1.csv",
         "ncr_ride_bookingsv1",
         "/mount/src/uber_v2/ncr_ride_bookingsv1.csv",
         "/mount/src/uber_v2/ncr_ride_bookingsv1",
         "/mnt/data/ncr_ride_bookingsv1.csv",
         "/mnt/data/ncr_ride_bookingsv1",
-    ]
-    for p in candidates:
+    ]:
         if os.path.exists(p):
             return p
     return None
-
 
 # ------------------------------#
 # Data I/O & Processing
@@ -134,13 +114,12 @@ def load_csv(file: io.BytesIO | str) -> pd.DataFrame:
         raise ValueError(f"Missing required columns: {missing}")
     return df
 
-
 @st.cache_data(show_spinner=False)
 def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    msgs = []
+    msgs: List[str] = []
     df = df.copy()
 
-    # Parse
+    # Parse Date/Time -> timestamp
     df["parsed_date"] = pd.to_datetime(df[DATE_COL], dayfirst=True, errors="coerce")
     df["parsed_time"] = pd.to_datetime(df[TIME_COL], format="%H:%M:%S", errors="coerce").dt.time
 
@@ -162,7 +141,7 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     df["is_weekend"] = df["weekday"].isin([5, 6]).astype(int)
     df["time_bucket"] = df["hour"].apply(time_bucket_from_hour)
 
-    # Numeric casts
+    # Numerics
     rename_map = {
         "Avg VTAT": "avg_vtat",
         "Avg CTAT": "avg_ctat",
@@ -186,16 +165,13 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     df["booking_status_canon"] = df.apply(canonical_status, axis=1)
     df["will_complete"] = (df["booking_status_canon"] == "Completed").astype(int)
 
-    # Categorical fields (as category dtype)
-    for c in [
-        "Booking Status", "booking_status_canon", "Vehicle Type", "Pickup Location",
-        "Drop Location", "Payment Method", "time_bucket"
-    ]:
+    # Categories
+    for c in ["Booking Status", "booking_status_canon", "Vehicle Type", "Pickup Location",
+              "Drop Location", "Payment Method", "time_bucket"]:
         df[c] = df[c].astype("category")
 
     df = df.sort_values("timestamp").reset_index(drop=True)
     return df, msgs
-
 
 # ------------------------------#
 # UI helpers
@@ -208,7 +184,6 @@ def insight_box(text: str):
         </div>
         """, unsafe_allow_html=True
     )
-
 
 def kpi_cards(df: pd.DataFrame):
     total = len(df)
@@ -228,47 +203,36 @@ def kpi_cards(df: pd.DataFrame):
     c6.metric("Avg Customer Rating", f"{avg_cus:.2f}" if not np.isnan(avg_cus) else "—")
     c7.metric("Total Revenue (Completed)", f"₹ {revenue:,.0f}")
 
-
 def bar_from_series(series: pd.Series, title: str, x_label: str = None, y_label: str = "Count", color=DEMAND_COLOR):
     dfp = series.reset_index()
     dfp.columns = [x_label or series.index.name or "Category", y_label]
     fig = px.bar(dfp, x=dfp.columns[0], y=dfp.columns[1], title=title, color_discrete_sequence=[color])
     st.plotly_chart(fig, use_container_width=True)
 
-
 def filter_block(df: pd.DataFrame) -> pd.DataFrame:
     st.sidebar.subheader("📅 Global Filters")
-
     min_d, max_d = df["timestamp"].dt.date.min(), df["timestamp"].dt.date.max()
-    default = (min_d, max_d) if min_d != max_d else (min_d, max_d)
-    drange = st.sidebar.date_input("Date range", default, min_value=min_d, max_value=max_d)
+    drange = st.sidebar.date_input("Date range", (min_d, max_d), min_value=min_d, max_value=max_d)
     if isinstance(drange, tuple) and len(drange) == 2:
         start_date, end_date = drange
-        mask = (df["timestamp"].dt.date >= start_date) & (df["timestamp"].dt.date <= end_date)
-        df = df[mask]
+        df = df[(df["timestamp"].dt.date >= start_date) & (df["timestamp"].dt.date <= end_date)]
 
     vtypes = st.sidebar.multiselect("Vehicle Type", sorted(df["Vehicle Type"].dropna().unique().tolist()))
-    if vtypes:
-        df = df[df["Vehicle Type"].isin(vtypes)]
+    if vtypes: df = df[df["Vehicle Type"].isin(vtypes)]
 
     pm = st.sidebar.multiselect("Payment Method", sorted(df["Payment Method"].dropna().unique().tolist()))
-    if pm:
-        df = df[df["Payment Method"].isin(pm)]
+    if pm: df = df[df["Payment Method"].isin(pm)]
 
     bs = st.sidebar.multiselect("Booking Status", sorted(df["booking_status_canon"].dropna().unique().tolist()))
-    if bs:
-        df = df[df["booking_status_canon"].isin(bs)]
+    if bs: df = df[df["booking_status_canon"].isin(bs)]
 
     pls = st.sidebar.multiselect("Pickup Location", sorted(df["Pickup Location"].dropna().unique().tolist()))
-    if pls:
-        df = df[df["Pickup Location"].isin(pls)]
+    if pls: df = df[df["Pickup Location"].isin(pls)]
 
     dls = st.sidebar.multiselect("Drop Location", sorted(df["Drop Location"].dropna().unique().tolist()))
-    if dls:
-        df = df[df["Drop Location"].isin(dls)]
+    if dls: df = df[df["Drop Location"].isin(dls)]
 
     return df
-
 
 def empty_state(df: pd.DataFrame) -> bool:
     if df.empty:
@@ -276,68 +240,123 @@ def empty_state(df: pd.DataFrame) -> bool:
         return True
     return False
 
-
 # ------------------------------#
-# Feature builders for ML
+# Minimal ML/Math helpers (no sklearn)
 # ------------------------------#
-def make_features_for_classification(data: pd.DataFrame):
-    # Avoid leakage: do not include post-outcome fields (ctat/ratings/cancel counts)
-    X = data[[
-        "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method",
-        "hour", "weekday", "month", "is_weekend", "time_bucket",
-        "avg_vtat", "ride_distance"
-    ]].copy()
-    y = data["will_complete"].copy()
-
-    for c in ["Pickup Location", "Drop Location"]:
-        X[c] = compress_categories(X[c].astype(str), top_n=30)
-
-    for c in ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"]:
-        X[c] = X[c].astype(str)
-
-    return X, y
-
-
-def time_aware_split(data: pd.DataFrame, test_size: float = 0.2):
-    n = len(data)
+def time_aware_split_idx(n: int, test_size: float = 0.2):
     cut = int((1 - test_size) * n)
-    return data.iloc[:cut].copy(), data.iloc[cut:].copy()
+    train_idx = np.arange(0, cut)
+    test_idx  = np.arange(cut, n)
+    return train_idx, test_idx
 
+def one_hot_fit_transform(df: pd.DataFrame, cat_cols: List[str], num_cols: List[str]) -> Tuple[pd.DataFrame, List[str]]:
+    df = df.copy()
+    # compress high-cardinality cats
+    for c in ["Pickup Location", "Drop Location"]:
+        if c in df.columns:
+            df[c] = compress_categories(df[c].astype(str), top_n=30)
+    for c in cat_cols:
+        df[c] = df[c].astype(str)
+    X = pd.get_dummies(df[cat_cols], drop_first=False)
+    if num_cols:
+        X = pd.concat([X, df[num_cols].astype(float)], axis=1)
+    columns = X.columns.tolist()
+    return X, columns
 
-def build_classifier(name: str):
-    num_cols = ["hour", "weekday", "month", "is_weekend", "avg_vtat", "ride_distance"]
-    cat_cols = ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"]
+def one_hot_transform(df: pd.DataFrame, cat_cols: List[str], num_cols: List[str], columns: List[str]) -> pd.DataFrame:
+    df = df.copy()
+    for c in ["Pickup Location", "Drop Location"]:
+        if c in df.columns:
+            df[c] = compress_categories(df[c].astype(str), top_n=30)
+    for c in cat_cols:
+        df[c] = df[c].astype(str)
+    X = pd.get_dummies(df[cat_cols], drop_first=False)
+    if num_cols:
+        X = pd.concat([X, df[num_cols].astype(float)], axis=1)
+    # align to training columns
+    for col in columns:
+        if col not in X.columns:
+            X[col] = 0.0
+    X = X[columns].astype(float)
+    return X
 
-    pre = ColumnTransformer([
-        ("num", StandardScaler(with_mean=False), num_cols),
-        ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols)
-    ])
+def zscore_scale(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mu = X.mean(axis=0, keepdims=True)
+    sd = X.std(axis=0, keepdims=True) + 1e-9
+    return (X - mu) / sd, mu, sd
 
-    if name == "Logistic Regression":
-        clf = LogisticRegression(max_iter=200, class_weight="balanced", n_jobs=None)
-    else:
-        clf = RandomForestClassifier(n_estimators=200, random_state=RANDOM_STATE, class_weight="balanced_subsample")
+def kmeans_numpy(X: np.ndarray, k: int, max_iter: int = 100, random_state: int = 42) -> Tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(random_state)
+    n = X.shape[0]
+    # kmeans++ init
+    centers = []
+    centers.append(X[rng.integers(0, n)])
+    for _ in range(1, k):
+        dists = np.min(((X[:, None, :] - np.array(centers)[None, :, :]) ** 2).sum(axis=2), axis=1)
+        probs = dists / (dists.sum() + 1e-9)
+        idx = rng.choice(n, p=probs)
+        centers.append(X[idx])
+    centers = np.array(centers)
 
-    pipe = Pipeline([("pre", pre), ("clf", clf)])
-    return pipe
+    labels = np.zeros(n, dtype=int)
+    for _ in range(max_iter):
+        # assign
+        d2 = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        new_labels = np.argmin(d2, axis=1)
+        if np.all(new_labels == labels):
+            break
+        labels = new_labels
+        # update
+        for j in range(k):
+            pts = X[labels == j]
+            if len(pts) > 0:
+                centers[j] = pts.mean(axis=0)
+    return labels, centers
 
+def auc_score(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    # rank-based AUC
+    order = np.argsort(y_score)
+    y = y_true[order]
+    cum_pos = np.cumsum(y)
+    total_pos = cum_pos[-1]
+    total_neg = len(y) - total_pos
+    if total_pos == 0 or total_neg == 0:
+        return np.nan
+    # sum of ranks for positives
+    ranks = np.arange(1, len(y) + 1)
+    sum_ranks_pos = (ranks * y).sum()
+    auc = (sum_ranks_pos - total_pos * (total_pos + 1) / 2) / (total_pos * total_neg)
+    return float(auc)
 
-def regression_models(name: str):
-    return LinearRegression() if name == "Linear Regression" else RandomForestRegressor(n_estimators=300, random_state=RANDOM_STATE)
+def confusion_binary(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
+    tp = int(((y_true == 1) & (y_pred == 1)).sum())
+    tn = int(((y_true == 0) & (y_pred == 0)).sum())
+    fp = int(((y_true == 0) & (y_pred == 1)).sum())
+    fn = int(((y_true == 1) & (y_pred == 0)).sum())
+    return np.array([[tn, fp], [fn, tp]])
 
+def f1_binary(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    cm = confusion_binary(y_true, y_pred)
+    tn, fp, fn, tp = cm[0,0], cm[0,1], cm[1,0], cm[1,1]
+    p = tp / (tp + fp + 1e-9)
+    r = tp / (tp + fn + 1e-9)
+    return 2 * p * r / (p + r + 1e-9)
+
+def pca_numpy(X: np.ndarray, n_components: int = 2) -> np.ndarray:
+    Xc = X - X.mean(axis=0, keepdims=True)
+    U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+    return Xc @ Vt.T[:, :n_components]
 
 # ------------------------------#
-# Page
+# Sidebar — data input
 # ------------------------------#
-st.set_page_config(page_title="Uber NCR 2024 — Analytics & Decision Lab (Lean)", page_icon="🚖", layout="wide")
-st.sidebar.title("🚖 Uber NCR 2024 — Analytics & Decision Lab (Lean)")
-
-# Data input
+st.sidebar.title("🚖 Uber NCR 2024 — Analytics & Decision Lab (Ultra-Lean)")
 st.sidebar.markdown("**Data Source**")
-data_source = st.sidebar.radio("Choose source", ["Auto-detect file", "Upload CSV"], index=0)
+source = st.sidebar.radio("Choose source", ["Auto-detect file", "Upload CSV"], index=0)
+
 df_raw = None
 try:
-    if data_source == "Auto-detect file":
+    if source == "Auto-detect file":
         path = find_default_csv()
         if path:
             df_raw = load_csv(path)
@@ -357,24 +376,25 @@ df, load_msgs = preprocess(df_raw)
 for m in load_msgs:
     st.warning(m)
 
-# Filters
+# Sidebar filters & downloads
 df_f = filter_block(df)
 if empty_state(df_f):
     st.stop()
 
-# Sidebar Downloads & Model selectors
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Downloads**")
 st.sidebar.download_button("Download Filtered Data (CSV)", df_f.to_csv(index=False).encode("utf-8"), "filtered_data.csv", "text/csv")
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🤖 Model Preferences")
-clf_choice = st.sidebar.selectbox("Classifier", ["Random Forest", "Logistic Regression"], index=0)
+st.sidebar.subheader("🤖 Model Preferences (Lean)")
+clf_choice = st.sidebar.selectbox("Classifier", ["Logistic (GLM)"], index=0)
 fcast_choice = st.sidebar.selectbox("Forecaster", ["ARIMA"], index=0)
-clus_choice = st.sidebar.selectbox("Clustering", ["K-Means"], index=0)
-regr_choice = st.sidebar.selectbox("Regressor", ["Random Forest", "Linear Regression"], index=0)
+clus_choice = st.sidebar.selectbox("Clustering", ["K-Means (NumPy)"], index=0)
+regr_choice = st.sidebar.selectbox("Regressor", ["OLS"], index=0)
 
+# ------------------------------#
 # Tabs
+# ------------------------------#
 tabs = st.tabs([
     "1) Executive Overview",
     "2) Ride Completion & Cancellation",
@@ -395,7 +415,6 @@ with tabs[0]:
     kpi_cards(df_f)
 
     st.markdown("---")
-    # Time series
     base = df_f.set_index("timestamp").assign(
         revenue=lambda x: x["booking_value"].where(x["booking_status_canon"] == "Completed", 0)
     )
@@ -410,17 +429,14 @@ with tabs[0]:
     st.plotly_chart(px.line(s, x="timestamp", y="revenue", title="Revenue Over Time (Completed)", markers=True,
                             color_discrete_sequence=[FIN_COLOR]), use_container_width=True)
 
-    # Funnel
     st.markdown("---")
     total = len(df_f)
     completed = int((df_f["booking_status_canon"] == "Completed").sum())
     rated = int(df_f["customer_rating"].replace(0, np.nan).notna().sum())
-    stages, values = ["Booked", "Completed", "Rated"], [total, completed, rated]
-    fig = go.Figure(go.Funnel(y=stages, x=values, textinfo="value+percent previous"))
+    fig = go.Figure(go.Funnel(y=["Booked", "Completed", "Rated"], x=[total, completed, rated], textinfo="value+percent previous"))
     fig.update_layout(height=350, margin=dict(l=20, r=20, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # Descriptive & top-freq
     st.markdown("---")
     c1, c2 = st.columns([1.2, 1])
     with c1:
@@ -428,12 +444,8 @@ with tabs[0]:
         rows = []
         for c in ["ride_distance", "booking_value", "driver_ratings", "customer_rating"]:
             s = df_f[c].replace(0, np.nan)
-            rows.append({
-                "Metric": c.replace("_", " ").title(),
-                "Mean": np.nanmean(s),
-                "Median": np.nanmedian(s),
-                "Mode": (s.mode().iloc[0] if s.dropna().size else np.nan)
-            })
+            rows.append({"Metric": c.replace("_", " ").title(), "Mean": np.nanmean(s), "Median": np.nanmedian(s),
+                         "Mode": (s.mode().iloc[0] if s.dropna().size else np.nan)})
         st.dataframe(pd.DataFrame(rows).round(2), use_container_width=True)
     with c2:
         st.markdown("### Top Frequencies")
@@ -441,11 +453,9 @@ with tabs[0]:
         bar_from_series(df_f["Pickup Location"].value_counts().head(10), "Pickup Location (Top 10)", "Pickup Location")
         bar_from_series(df_f["Payment Method"].value_counts().head(10), "Payment Method (Top 10)", "Payment Method")
 
-    # Insight
     spike = df_f.groupby("time_bucket")["Booking ID"].count().sort_values(ascending=False).head(1)
     if len(spike) > 0:
-        tb = spike.index[0]
-        insight_box(f"**Demand peaks in {tb}**. Rebalance supply/incentives to curb 'No Driver Found' and cancellations.")
+        insight_box(f"**Demand peaks in {spike.index[0]}**. Rebalance supply/incentives to curb 'No Driver Found' & cancellations.")
 
 # ---------- Tab 2
 with tabs[1]:
@@ -487,15 +497,11 @@ with tabs[1]:
     bar_from_series(by_pickup, "Cancellation Rate by Pickup (Top 20)", "Pickup Location", "Rate")
 
     if len(by_vehicle) and len(by_bucket):
-        insight_box(
-            f"Highest cancellation propensity: **{by_vehicle.index[0]}** × **{by_bucket.index[0]}**. "
-            f"Target driver incentives and VTAT caps in these windows."
-        )
+        insight_box(f"Highest cancellation propensity: **{by_vehicle.index[0]}** × **{by_bucket.index[0]}**. Target policies & VTAT caps here.")
 
 # ---------- Tab 3
 with tabs[2]:
     st.markdown("## Geographical & Temporal (No Maps)")
-
     st.markdown("### Busiest Locations")
     top_pick = df_f["Pickup Location"].value_counts().head(20).rename("count").reset_index().rename(columns={"index": "Pickup Location"})
     top_drop = df_f["Drop Location"].value_counts().head(20).rename("count").reset_index().rename(columns={"index": "Drop Location"})
@@ -519,20 +525,16 @@ with tabs[2]:
                                color_discrete_sequence=[DEMAND_COLOR]), use_container_width=True)
     with c4:
         dow_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
-        st.plotly_chart(px.bar(dow.rename(index=dow_map), title="By Day of Week",
-                               labels={"index": "Day", "value": "Trips"},
+        st.plotly_chart(px.bar(dow.rename(index=dow_map), title="By Day of Week", labels={"index": "Day", "value": "Trips"},
                                color_discrete_sequence=[DEMAND_COLOR]), use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Category Heat Tables")
-    heat_pick_hr = (df_f.assign(cnt=1)
-                    .pivot_table(index="Pickup Location", columns="hour", values="cnt", aggfunc="sum", fill_value=0))
+    heat_pick_hr = (df_f.assign(cnt=1).pivot_table(index="Pickup Location", columns="hour", values="cnt", aggfunc="sum", fill_value=0))
     heat_pick_hr = heat_pick_hr.loc[heat_pick_hr.sum(axis=1).sort_values(ascending=False).head(20).index]
     st.plotly_chart(px.imshow(heat_pick_hr, aspect="auto", color_continuous_scale="Blues",
                               title="Pickup × Hour Heat (Top 20 Pickups)"), use_container_width=True)
-
-    heat_pick_dow = (df_f.assign(cnt=1)
-                     .pivot_table(index="Pickup Location", columns="weekday", values="cnt", aggfunc="sum", fill_value=0))
+    heat_pick_dow = (df_f.assign(cnt=1).pivot_table(index="Pickup Location", columns="weekday", values="cnt", aggfunc="sum", fill_value=0))
     heat_pick_dow = heat_pick_dow.loc[heat_pick_dow.sum(axis=1).sort_values(ascending=False).head(20).index]
     heat_pick_dow.columns = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     st.plotly_chart(px.imshow(heat_pick_dow, aspect="auto", color_continuous_scale="Blues",
@@ -541,7 +543,6 @@ with tabs[2]:
 # ---------- Tab 4
 with tabs[3]:
     st.markdown("## Operational Efficiency")
-
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(px.histogram(df_f, x="avg_vtat", nbins=40, title="Avg VTAT",
@@ -567,11 +568,8 @@ with tabs[3]:
                               title="Correlation Matrix"), use_container_width=True)
 
     vt_series = df_f["avg_vtat"].dropna()
-    if vt_series.empty:
-        vt_min, vt_max, vt_default = 0.0, 1.0, 0.5
-    else:
-        vt_min, vt_max = float(vt_series.min()), float(vt_series.max())
-        vt_default = float(np.nanpercentile(vt_series, 80))
+    vt_min, vt_max = (0.0, 1.0) if vt_series.empty else (float(vt_series.min()), float(vt_series.max()))
+    vt_default = 0.5 if vt_series.empty else float(np.nanpercentile(vt_series, 80))
     vt_thresh = st.slider("VTAT threshold (minutes)", min_value=vt_min, max_value=vt_max, value=vt_default)
     high_vt = df_f["avg_vtat"] >= vt_thresh
     cancel_rate_high = (df_f.loc[high_vt, "will_complete"] == 0).mean() if high_vt.any() else np.nan
@@ -598,14 +596,13 @@ with tabs[4]:
                            color_discrete_sequence=px.colors.qualitative.Set2), use_container_width=True)
 
     st.markdown("---")
-    fig2 = px.scatter(df_f[rev_mask], x="ride_distance", y="booking_value", color="Vehicle Type",
-                      trendline="ols", title="Booking Value vs Ride Distance")
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(px.scatter(df_f[rev_mask], x="ride_distance", y="booking_value", color="Vehicle Type",
+                               trendline="ols", title="Booking Value vs Ride Distance"),
+                    use_container_width=True)
 
 # ---------- Tab 6
 with tabs[5]:
     st.markdown("## Ratings & Satisfaction")
-
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(px.histogram(df_f, x="driver_ratings", nbins=20, title="Driver Ratings",
@@ -616,7 +613,6 @@ with tabs[5]:
 
     st.markdown("---")
     st.markdown("### Correlations & Low-Rating Risk")
-    # Simple correlation table
     rtab = df_f[["driver_ratings", "avg_vtat", "cancelled_by_driver"]].corr().iloc[0, 1:].to_frame("corr")
     st.dataframe(rtab.round(2), use_container_width=True)
 
@@ -641,136 +637,115 @@ with tabs[6]:
         bar_from_series(inc_df["Vehicle Type"].value_counts().head(20), "Incomplete by Vehicle", "Vehicle Type", color=DEMAND_COLOR)
 
 # ------------------------------#
-# ML Tab
+# Tab 8 — ML Lab (lean, no sklearn)
 # ------------------------------#
-def plot_confusion(y_true, y_pred):
-    cm = confusion_matrix(y_true, y_pred)
-    fig = px.imshow(cm, text_auto=True, color_continuous_scale="Blues", title="Confusion Matrix")
-    fig.update_xaxes(title="Predicted")
-    fig.update_yaxes(title="Actual")
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def plot_roc(y_true, y_score):
-    fpr, tpr, _ = roc_curve(y_true, y_score)
-    auc = roc_auc_score(y_true, y_score)
-    fig, ax = plt.subplots()
-    ax.plot(fpr, tpr, label=f"AUC={auc:.3f}")
-    ax.plot([0, 1], [0, 1], "--", alpha=0.5)
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("ROC Curve")
-    ax.legend()
-    st.pyplot(fig, use_container_width=True)
-
-
-def train_arima(df_ts: pd.DataFrame, periods: int = 14):
-    y = df_ts.set_index("ds")["y"].asfreq("D").fillna(0)
-    model = sm.tsa.ARIMA(y, order=(2, 1, 2))
-    res = model.fit()
-    fc = res.get_forecast(steps=periods)
-    fc_df = pd.DataFrame({
-        "ds": pd.date_range(y.index[-1] + pd.Timedelta(days=1), periods=periods, freq="D"),
-        "yhat": fc.predicted_mean.values,
-    })
-    conf = fc.conf_int()
-    fc_df["yhat_lower"] = conf.iloc[:, 0].values
-    fc_df["yhat_upper"] = conf.iloc[:, 1].values
-    hist = pd.DataFrame({"ds": y.index, "yhat": y.values})
-    return hist, fc_df
-
-
 with tabs[7]:
-    st.markdown("## ML Lab")
+    st.markdown("## ML Lab (Lean)")
 
-    # A) Classification
-    st.markdown("### A) Classification — Predict `will_complete`")
-    X_all, y_all = make_features_for_classification(df_f)
-    idx_df = df_f.loc[X_all.index, ["timestamp"]].copy()
-    idx_df["y"] = y_all.values
-    tr, te = time_aware_split(idx_df, test_size=0.2)
-    X_train, y_train = X_all.loc[tr.index], y_all.loc[tr.index]
-    X_test, y_test = X_all.loc[te.index], y_all.loc[te.index]
+    # ---------------- A) Classification — GLM (Logit)
+    st.markdown("### A) Classification — Predict `will_complete` (GLM Logistic)")
 
-    pipe = build_classifier(clf_choice)
-    with st.spinner("Training classifier..."):
-        pipe.fit(X_train, y_train)
-    y_pred = pipe.predict(X_test)
-    # Probabilities if available; otherwise min-max scores
-    if hasattr(pipe.named_steps["clf"], "predict_proba"):
-        y_prob = pipe.predict_proba(X_test)[:, 1]
-    else:
-        try:
-            y_score = pipe.decision_function(X_test)
-            y_prob = (y_score - y_score.min()) / (y_score.max() - y_score.min() + 1e-6)
-        except Exception:
-            y_prob = y_pred.astype(float)
+    cat_cols = ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"]
+    num_cols = ["hour", "weekday", "month", "is_weekend", "avg_vtat", "ride_distance"]
+
+    df_model = df_f[cat_cols + num_cols + ["will_complete"]].copy()
+    X_all, cols = one_hot_fit_transform(df_model, cat_cols, num_cols)
+    y_all = df_model["will_complete"].astype(int).values
+
+    n = len(X_all)
+    train_idx, test_idx = time_aware_split_idx(n, test_size=0.2)
+    X_train, X_test = X_all.iloc[train_idx].values, X_all.iloc[test_idx].values
+    y_train, y_test = y_all[train_idx], y_all[test_idx]
+
+    # Statsmodels GLM
+    X_train_sm = sm.add_constant(X_train, has_constant="add")
+    X_test_sm  = sm.add_constant(X_test,  has_constant="add")
+
+    try:
+        glm = sm.GLM(y_train, X_train_sm, family=sm.families.Binomial())
+        res = glm.fit(maxiter=200)
+        y_prob = res.predict(X_test_sm)
+    except Exception as e:
+        st.error(f"GLM failed: {e}")
+        y_prob = np.full_like(y_test, y_test.mean(), dtype=float)
+
+    y_pred = (y_prob >= 0.5).astype(int)
+    acc = float((y_pred == y_test).mean())
+    f1  = f1_binary(y_test, y_pred)
+    try:
+        auc = auc_score(y_test, y_prob)
+    except Exception:
+        auc = np.nan
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Accuracy", f"{accuracy_score(y_test, y_pred):.3f}")
-    c2.metric("F1", f"{f1_score(y_test, y_pred):.3f}")
-    try:
-        c3.metric("ROC AUC", f"{roc_auc_score(y_test, y_prob):.3f}")
-    except Exception:
-        c3.metric("ROC AUC", "—")
+    c1.metric("Accuracy", f"{acc:.3f}")
+    c2.metric("F1", f"{f1:.3f}")
+    c3.metric("ROC AUC", f"{auc:.3f}" if not np.isnan(auc) else "—")
     c4.metric("Test Size", f"{len(y_test):,}")
 
-    plot_confusion(y_test, y_pred)
+    # Confusion matrix
+    cm = confusion_binary(y_test, y_pred)
+    fig_cm = px.imshow(cm, text_auto=True, color_continuous_scale="Blues", title="Confusion Matrix")
+    fig_cm.update_xaxes(title="Predicted"); fig_cm.update_yaxes(title="Actual")
+    st.plotly_chart(fig_cm, use_container_width=True)
+
+    # ROC (simple)
     try:
-        plot_roc(y_test, y_prob)
+        thresholds = np.linspace(0, 1, 101)
+        tprs, fprs = [], []
+        for t in thresholds:
+            yp = (y_prob >= t).astype(int)
+            cm_ = confusion_binary(y_test, yp)
+            tn, fp, fn, tp = cm_[0,0], cm_[0,1], cm_[1,0], cm_[1,1]
+            tprs.append(tp / (tp + fn + 1e-9))
+            fprs.append(fp / (fp + tn + 1e-9))
+        fig, ax = plt.subplots()
+        ax.plot(fprs, tprs, label=f"AUC={auc:.3f}" if not np.isnan(auc) else "AUC=—")
+        ax.plot([0, 1], [0, 1], "--", alpha=0.5)
+        ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate"); ax.set_title("ROC Curve"); ax.legend()
+        st.pyplot(fig, use_container_width=True)
     except Exception:
         pass
 
-    # Feature importance / coefficients
-    st.markdown("#### Feature Importance / Coefficients")
-    try:
-        model = pipe.named_steps["clf"]
-        pre = pipe.named_steps["pre"]
-        oh: OneHotEncoder = pre.named_transformers_["cat"]
-        num_cols = pre.transformers_[0][2]
-        cat_cols = pre.transformers_[1][2]
-        feature_names = list(num_cols) + list(oh.get_feature_names_out(cat_cols))
-
-        if hasattr(model, "feature_importances_"):
-            fi = model.feature_importances_
-            imp_df = pd.DataFrame({"feature": feature_names, "importance": fi}).sort_values("importance", ascending=False).head(25)
-            st.plotly_chart(px.bar(imp_df, x="importance", y="feature", orientation="h", title="Top Features"), use_container_width=True)
-        elif hasattr(model, "coef_"):
-            coefs = model.coef_.ravel()
-            coef_df = pd.DataFrame({"feature": feature_names, "coef": coefs}).assign(abs_coef=lambda d: d["coef"].abs()).sort_values("abs_coef", ascending=False).head(25)
-            st.plotly_chart(px.bar(coef_df, x="coef", y="feature", orientation="h", title="Top Coefficients"), use_container_width=True)
-        else:
-            st.info("Model does not expose importances/coefficients.")
-    except Exception as e:
-        st.info(f"Feature importance unavailable: {e}")
-
-    pred_out = df_f.loc[te.index, ["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
-    pred_out["will_complete_true"] = y_test.values
+    pred_out = df_f.iloc[test_idx][["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
+    pred_out["will_complete_true"] = y_test
     pred_out["will_complete_pred"] = y_pred
     pred_out["risk_score"] = 1 - y_prob
     st.download_button("Download Predictions (CSV)", pred_out.to_csv(index=False).encode("utf-8"), "predictions.csv", "text/csv")
 
-    # B) Forecasting — ARIMA only
+    # ---------------- B) Forecasting — ARIMA
     st.markdown("---")
     st.markdown("### B) Forecasting — Demand (Daily, ARIMA)")
     ts = df_f.set_index("timestamp").resample("D").size().reset_index(name="y").rename(columns={"timestamp": "ds"})
     periods = st.slider("Forecast Horizon (days)", 7, 60, 14)
     try:
-        hist, fc = train_arima(ts, periods=periods)
+        y = ts.set_index("ds")["y"].asfreq("D").fillna(0)
+        model = sm.tsa.ARIMA(y, order=(2, 1, 2))
+        res = model.fit()
+        fc = res.get_forecast(steps=periods)
+        fc_df = pd.DataFrame({
+            "ds": pd.date_range(y.index[-1] + pd.Timedelta(days=1), periods=periods, freq="D"),
+            "yhat": fc.predicted_mean.values
+        })
+        conf = fc.conf_int()
+        fc_df["yhat_lower"] = conf.iloc[:, 0].values
+        fc_df["yhat_upper"] = conf.iloc[:, 1].values
+        hist = pd.DataFrame({"ds": y.index, "yhat": y.values})
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=hist["ds"], y=hist["yhat"], name="History"))
-        fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat"], name="Forecast"))
-        fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat_upper"], line=dict(width=0), showlegend=False))
-        fig.add_trace(go.Scatter(x=fc["ds"], y=fc["yhat_lower"], line=dict(width=0), fill="tonexty",
+        fig.add_trace(go.Scatter(x=fc_df["ds"], y=fc_df["yhat"], name="Forecast"))
+        fig.add_trace(go.Scatter(x=fc_df["ds"], y=fc_df["yhat_upper"], line=dict(width=0), showlegend=False))
+        fig.add_trace(go.Scatter(x=fc_df["ds"], y=fc_df["yhat_lower"], line=dict(width=0), fill="tonexty",
                                  fillcolor="rgba(31,119,180,0.2)", showlegend=False))
         st.plotly_chart(fig, use_container_width=True)
-        st.download_button("Download Forecast (CSV)", fc.to_csv(index=False).encode("utf-8"), "forecast.csv", "text/csv")
+        st.download_button("Download Forecast (CSV)", fc_df.to_csv(index=False).encode("utf-8"), "forecast.csv", "text/csv")
     except Exception as e:
         st.info(f"Forecast failed: {e}")
 
-    # C) Clustering — KMeans
+    # ---------------- C) Clustering — KMeans (NumPy)
     st.markdown("---")
-    st.markdown("### C) Clustering — Customer Segmentation (KMeans)")
+    st.markdown("### C) Clustering — Customer Segmentation (KMeans, NumPy)")
 
     cust = df_f.groupby("Customer ID", observed=False).agg(
         freq=("Booking ID", "count"),
@@ -780,8 +755,7 @@ with tabs[7]:
         u_payment=("Payment Method", lambda s: (s.astype(str).mode().iloc[0] if len(s) and not s.mode().empty else "Unknown")),
     ).reset_index()
 
-    pm_counts = df_f.pivot_table(index="Customer ID", columns="Payment Method",
-                                 values="Booking ID", aggfunc="count", fill_value=0)
+    pm_counts = df_f.pivot_table(index="Customer ID", columns="Payment Method", values="Booking ID", aggfunc="count", fill_value=0)
     denom = pm_counts.sum(axis=1).replace(0, np.nan)
     pm_share = pm_counts.div(denom, axis=0).reset_index()
 
@@ -793,28 +767,16 @@ with tabs[7]:
 
     payment_cols = [c for c in pm_share.columns if c != "Customer ID"]
     feat_cols = ["freq", "avg_value", "avg_distance", "cancel_rate"] + payment_cols
-    Xc = cust[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-
-    scaler = StandardScaler()
-    Xc_scaled = scaler.fit_transform(Xc)
+    Xc = cust[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0).values
+    Xc_scaled, mu_c, sd_c = zscore_scale(Xc)
 
     k = st.slider("K (clusters)", 2, 10, 4)
-    clus = KMeans(n_clusters=k, random_state=RANDOM_STATE, n_init="auto")
-    labels = clus.fit_predict(Xc_scaled)
+    labels, centers = kmeans_numpy(Xc_scaled, k=k, random_state=RANDOM_STATE)
     cust["cluster"] = labels
 
-    if len(set(labels)) > 1:
-        try:
-            sil = silhouette_score(Xc_scaled, labels)
-            st.metric("Silhouette Score", f"{sil:.3f}")
-        except Exception:
-            pass
-
-    # PCA for viz
+    # PCA scatter
     try:
-        from sklearn.decomposition import PCA
-        pca = PCA(n_components=2, random_state=RANDOM_STATE)
-        Xp = pca.fit_transform(Xc_scaled)
+        Xp = pca_numpy(Xc_scaled, n_components=2)
         viz = pd.DataFrame({"pc1": Xp[:, 0], "pc2": Xp[:, 1], "cluster": labels})
         st.plotly_chart(px.scatter(viz, x="pc1", y="pc2", color="cluster", title="Cluster Scatter (PCA)"),
                         use_container_width=True)
@@ -833,37 +795,35 @@ with tabs[7]:
     st.download_button("Download Clusters (CSV)", cust[["Customer ID", "cluster"] + feat_cols].to_csv(index=False).encode("utf-8"),
                        "clusters.csv", "text/csv")
 
-    # D) Regression — Booking Value
+    # ---------------- D) Regression — OLS
     st.markdown("---")
-    st.markdown("### D) Regression — Predict Booking Value")
-    Xr = df_f[[
-        "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method",
-        "hour", "weekday", "month", "is_weekend", "time_bucket",
-        "avg_vtat", "ride_distance"
-    ]].copy()
-    yr = df_f["booking_value"].fillna(0)
+    st.markdown("### D) Regression — Predict Booking Value (OLS)")
 
-    for c in ["Pickup Location", "Drop Location"]:
-        Xr[c] = compress_categories(Xr[c].astype(str), top_n=30)
-    for c in ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"]:
-        Xr[c] = Xr[c].astype(str)
+    df_reg = df_f[cat_cols + num_cols + ["booking_value"]].copy()
+    Xr_all, r_cols = one_hot_fit_transform(df_reg, cat_cols, num_cols)
+    yr_all = df_reg["booking_value"].fillna(0).astype(float).values
 
-    Xr_train, Xr_test, yr_train, yr_test = train_test_split(Xr, yr, test_size=0.2, shuffle=False)
+    n = len(Xr_all)
+    tr_idx, te_idx = time_aware_split_idx(n, test_size=0.2)
+    Xr_train, Xr_test = Xr_all.iloc[tr_idx].values, Xr_all.iloc[te_idx].values
+    yr_train, yr_test = yr_all[tr_idx], yr_all[te_idx]
 
-    pre_r = ColumnTransformer([
-        ("num", StandardScaler(with_mean=False), ["hour", "weekday", "month", "is_weekend", "avg_vtat", "ride_distance"]),
-        ("cat", OneHotEncoder(handle_unknown="ignore"), ["Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "time_bucket"])
-    ])
+    Xr_train_sm = sm.add_constant(Xr_train, has_constant="add")
+    Xr_test_sm  = sm.add_constant(Xr_test,  has_constant="add")
 
-    reg = regression_models(regr_choice)
-    rpipe = Pipeline([("pre", pre_r), ("regr", reg)])
-    with st.spinner("Training regressor..."):
-        rpipe.fit(Xr_train, yr_train)
-    yhat = rpipe.predict(Xr_test)
+    try:
+        ols = sm.OLS(yr_train, Xr_train_sm).fit()
+        yhat = ols.predict(Xr_test_sm)
+    except Exception as e:
+        st.error(f"OLS failed: {e}")
+        yhat = np.full_like(yr_test, yr_train.mean())
 
-    rmse = mean_squared_error(yr_test, yhat, squared=False)
-    mae = mean_absolute_error(yr_test, yhat)
-    r2 = r2_score(yr_test, yhat)
+    rmse = float(np.sqrt(np.mean((yr_test - yhat) ** 2)))
+    mae = float(np.mean(np.abs(yr_test - yhat)))
+    ss_res = float(np.sum((yr_test - yhat) ** 2))
+    ss_tot = float(np.sum((yr_test - yr_test.mean()) ** 2))
+    r2 = 1 - ss_res / (ss_tot + 1e-9)
+
     c1, c2, c3 = st.columns(3)
     c1.metric("RMSE", f"{rmse:,.2f}")
     c2.metric("MAE", f"{mae:,.2f}")
@@ -877,35 +837,32 @@ with tabs[7]:
     ax.set_title("Residuals")
     st.pyplot(fig_res, use_container_width=True)
 
-    regr_out = df_f.loc[Xr_test.index, ["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
-    regr_out["actual_value"] = yr_test.values
+    regr_out = df_f.iloc[te_idx][["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
+    regr_out["actual_value"] = yr_test
     regr_out["pred_value"] = yhat
     st.download_button("Download Regression Predictions (CSV)", regr_out.to_csv(index=False).encode("utf-8"),
                        "regression_predictions.csv", "text/csv")
 
 # ---------- Tab 9
 with tabs[8]:
-    st.markdown("## Risk & Fraud")
-    st.markdown("### Isolation Forest — Anomaly Scores")
+    st.markdown("## Risk & Fraud (Z-score Anomalies)")
     fr_cols = [
         "avg_vtat", "avg_ctat", "ride_distance", "booking_value",
         "hour", "weekday", "is_weekend",
         "cancelled_by_customer", "cancelled_by_driver", "incomplete_rides"
     ]
-    Xf = df_f[fr_cols].fillna(0).replace([np.inf, -np.inf], 0)
-    scaler_f = StandardScaler()
-    Xf_scaled = scaler_f.fit_transform(Xf)
+    Xf = df_f[fr_cols].fillna(0).replace([np.inf, -np.inf], 0).astype(float).values
+    Xf_scaled, _, _ = zscore_scale(Xf)
+    # aggregate absolute z-scores as a simple anomaly score
+    scores = np.abs(Xf_scaled).mean(axis=1)
+    thresh = st.slider("Anomaly threshold (aggregate Z)", 0.5, 5.0, 2.5, 0.1)
+    is_anom = (scores >= thresh).astype(int)
 
-    n_estim = st.slider("Estimators", 50, 500, 200, step=50)
-    contamination = st.slider("Contamination", 0.001, 0.1, 0.02)
-    iso = IsolationForest(n_estimators=n_estim, contamination=contamination, random_state=RANDOM_STATE)
-    preds = iso.fit_predict(Xf_scaled)  # -1 anomaly
-    scores = -iso.score_samples(Xf_scaled)
-
-    risk_df = df_f[["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method",
-                    "booking_value", "ride_distance", "booking_status_canon"]].copy()
+    risk_df = df_f[["Booking ID", "timestamp", "Vehicle Type", "Pickup Location",
+                    "Drop Location", "Payment Method", "booking_value", "ride_distance",
+                    "booking_status_canon"]].copy()
     risk_df["risk_score"] = scores
-    risk_df["is_anomaly"] = (preds == -1).astype(int)
+    risk_df["is_anomaly"] = is_anom
 
     st.dataframe(risk_df.sort_values("risk_score", ascending=False).head(200), use_container_width=True)
     st.download_button("Download Risk Flags (CSV)", risk_df.to_csv(index=False).encode("utf-8"), "risk_flags.csv", "text/csv")
@@ -923,7 +880,7 @@ with tabs[9]:
     c1, c2, c3 = st.columns(3)
     supply_up = c1.slider("Driver Supply Δ (%)", -50, 50, 10)
     incent_up = c2.slider("Driver Incentive Δ (%)", 0, 100, 10)
-    price_up = c3.slider("Pricing Uplift Δ (%)", -20, 30, 5)
+    price_up  = c3.slider("Pricing Uplift Δ (%)", -20, 30, 5)
 
     base_total = len(df_f)
     base_complete = int((df_f["will_complete"] == 1).sum())
@@ -955,7 +912,6 @@ with tabs[9]:
         "Scenario": [scen_total, scen_comp_rate, scen_completed, scen_arpr, scen_rev, scen_rating]
     })
     st.dataframe(compare.style.format({"Baseline": "{:,.2f}", "Scenario": "{:,.2f}"}).hide(axis="index"), use_container_width=True)
-
     st.plotly_chart(px.bar(compare, x="Metric", y=["Baseline", "Scenario"], barmode="group", title="Baseline vs Scenario",
                            color_discrete_sequence=px.colors.qualitative.Set2), use_container_width=True)
 
@@ -993,4 +949,4 @@ with tabs[10]:
 
     st.download_button("Download HTML Summary", html.encode("utf-8"), "summary.html", "text/html")
 
-st.caption("© 2025 — Lean single-file app. Heavy deps removed for reliability on Streamlit Cloud.")
+st.caption("© 2025 — Ultra-lean single-file app: no sklearn/prophet/shap. Built for reliability on Streamlit Cloud.")
