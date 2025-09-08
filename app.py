@@ -1032,86 +1032,8 @@ with tabs[7]:
     regr_out["pred_value"] = yhat
     st.download_button("Download Regression Predictions (CSV)", regr_out.to_csv(index=False).encode("utf-8"), "regression_predictions.csv", "text/csv")
 
-# ---------- Tab 9
-with tabs[8]:
-    st.markdown("## Risk & Fraud")
 
-    st.markdown("### Anomaly Detection")
-    fr_cols = [
-        "avg_vtat", "avg_ctat", "ride_distance", "booking_value",
-        "hour", "weekday", "is_weekend",
-        "cancelled_by_customer", "cancelled_by_driver", "incomplete_rides"
-    ]
-    Xf = df_f[fr_cols].fillna(0).replace([np.inf, -np.inf], 0)
-    scaler_f = StandardScaler()
-    Xf_scaled = scaler_f.fit_transform(Xf)
-
-    n_estim = st.slider("Isolation Forest estimators", 50, 500, 200, step=50)
-    contamination = st.slider("Contamination (expected anomaly share)", 0.001, 0.1, 0.02)
-    iso = IsolationForest(n_estimators=n_estim, contamination=contamination, random_state=RANDOM_STATE)
-    preds = iso.fit_predict(Xf_scaled)  # -1 anomaly, 1 normal
-    scores = -iso.score_samples(Xf_scaled)  # higher = more anomalous
-
-    risk_df = df_f[["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method", "booking_value", "ride_distance", "booking_status_canon"]].copy()
-    risk_df["risk_score"] = scores
-    risk_df["is_anomaly"] = (preds == -1).astype(int)
-
-    st.dataframe(risk_df.sort_values("risk_score", ascending=False).head(200), use_container_width=True)
-    st.download_button("Download Risk Flags (CSV)", risk_df.to_csv(index=False).encode("utf-8"), "risk_flags.csv", "text/csv")
-
-# ---------- Tab 10
 with tabs[9]:
-    st.markdown("## Operations Simulator")
-
-    st.caption("""
-    Assumptions (simple elastic model):
-    • Driver supply ↑ reduces 'No Driver Found' & driver cancellations (elasticity −0.6 each).
-    • Incentives ↑ reduce driver cancellations (elasticity −0.4) and slightly improve ratings (+0.1 per 10%).
-    • Pricing ↑ reduces demand (elasticity −0.8) but increases ARPR linearly by uplift.
-    """)
-
-    c1, c2, c3 = st.columns(3)
-    supply_up = c1.slider("Driver Supply Δ (%)", -50, 50, 10)
-    incent_up = c2.slider("Driver Incentive Δ (%)", 0, 100, 10)
-    price_up = c3.slider("Pricing Uplift Δ (%)", -20, 30, 5)
-
-    base_total = len(df_f)
-    base_complete = (df_f["will_complete"] == 1).sum()
-    base_comp_rate = base_complete / base_total if base_total else 0
-    base_rev = df_f.loc[df_f["will_complete"] == 1, "booking_value"].sum()
-    base_arpr = base_rev / base_complete if base_complete else 0
-    base_rating = df_f["customer_rating"].replace(0, np.nan).mean()
-
-    e_supply_cxl = -0.6
-    e_incent_cxl = -0.4
-    e_price_demand = -0.8
-
-    demand_factor = max(0.0, 1 + (price_up / 100) * e_price_demand)
-    cxl_factor = (1 + (supply_up / 100) * e_supply_cxl) * (1 + (incent_up / 100) * e_incent_cxl)
-    cxl_factor = max(0.5, min(1.2, cxl_factor))
-
-    scen_total = int(base_total * demand_factor)
-    scen_comp_rate = min(0.995, base_comp_rate * (1 / cxl_factor))
-    scen_completed = int(scen_total * scen_comp_rate)
-    scen_arpr = base_arpr * (1 + price_up / 100)
-    scen_rev = scen_completed * scen_arpr
-    scen_rating = (base_rating if not np.isnan(base_rating) else 4.5) + 0.01 * incent_up
-    scen_rating = min(5.0, scen_rating)
-
-    st.markdown("### Baseline vs Scenario")
-    compare = pd.DataFrame({
-        "Metric": ["Total Bookings", "Completion Rate", "Completed Rides", "ARPR", "Total Revenue", "Avg Customer Rating"],
-        "Baseline": [base_total, base_comp_rate, base_complete, base_arpr, base_rev, base_rating],
-        "Scenario": [scen_total, scen_comp_rate, scen_completed, scen_arpr, scen_rev, scen_rating]
-    })
-    st.dataframe(compare.style.format({"Baseline": "{:,.2f}", "Scenario": "{:,.2f}"}).hide(axis="index"), use_container_width=True)
-
-    fig = px.bar(compare, x="Metric", y=["Baseline", "Scenario"], barmode="group", title="Baseline vs Scenario",
-                 color_discrete_sequence=px.colors.qualitative.Set2)
-    st.plotly_chart(fig, use_container_width=True)
-
-# ---------- Tab 11
-with tabs[10]:
     st.markdown("## Reports & Exports")
 
     comp_rate = (df_f["will_complete"] == 1).mean()
