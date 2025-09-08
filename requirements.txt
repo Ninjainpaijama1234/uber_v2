@@ -1,15 +1,7 @@
-
 # requirements.txt
 streamlit
 pandas
 numpy
 plotly
 matplotlib
-seaborn
-scikit-learn
-xgboost
-lightgbm
-prophet
-shap
 statsmodels
-pydantic
