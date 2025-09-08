@@ -1,5 +1,7 @@
 # app.py
-# Ultra-lean Streamlit app: no scikit-learn, no prophet/shap/xgboost/lightgbm.
+# Ultra-lean Streamlit app (no scikit-learn / prophet / shap / xgboost / lightgbm).
+# Fix: force all ML matrices to float64 & NaN/Inf-safe to resolve statsmodels isfinite errors.
+
 from __future__ import annotations
 
 import os
@@ -17,7 +19,11 @@ import statsmodels.api as sm
 # ------------------------------#
 # Constants & Config
 # ------------------------------#
-st.set_page_config(page_title="Uber NCR 2024 — Analytics & Decision Lab (Ultra-Lean)", page_icon="🚖", layout="wide")
+st.set_page_config(
+    page_title="Uber NCR 2024 — Analytics & Decision Lab (Ultra-Lean)",
+    page_icon="🚖",
+    layout="wide",
+)
 
 RANDOM_STATE = 42
 DATE_COL = "Date"
@@ -64,6 +70,7 @@ def time_bucket_from_hour(h: int) -> str:
         return "Night (21–04)"
 
 def compress_categories(s: pd.Series, top_n: int = 30, other_label: str = "Other") -> pd.Series:
+    s = s.astype(str)
     top = s.value_counts().nlargest(top_n).index
     return s.where(s.isin(top), other_label)
 
@@ -249,35 +256,43 @@ def time_aware_split_idx(n: int, test_size: float = 0.2):
     test_idx  = np.arange(cut, n)
     return train_idx, test_idx
 
+def _finalize_matrix(X: pd.DataFrame) -> pd.DataFrame:
+    """Ensure matrix is strictly float64 with no NaN/Inf/object."""
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X = X.apply(pd.to_numeric, errors="coerce")
+    X = X.fillna(0.0).astype(np.float64)
+    return X
+
 def one_hot_fit_transform(df: pd.DataFrame, cat_cols: List[str], num_cols: List[str]) -> Tuple[pd.DataFrame, List[str]]:
     df = df.copy()
     # compress high-cardinality cats
     for c in ["Pickup Location", "Drop Location"]:
         if c in df.columns:
-            df[c] = compress_categories(df[c].astype(str), top_n=30)
+            df[c] = compress_categories(df[c], top_n=30)
     for c in cat_cols:
         df[c] = df[c].astype(str)
-    X = pd.get_dummies(df[cat_cols], drop_first=False)
-    if num_cols:
-        X = pd.concat([X, df[num_cols].astype(float)], axis=1)
-    columns = X.columns.tolist()
-    return X, columns
+    X_cat = pd.get_dummies(df[cat_cols], drop_first=False, dummy_na=False)
+    X_num = df[num_cols].apply(pd.to_numeric, errors="coerce") if num_cols else pd.DataFrame(index=df.index)
+    X = pd.concat([X_cat, X_num], axis=1)
+    X = _finalize_matrix(X)
+    return X, X.columns.tolist()
 
 def one_hot_transform(df: pd.DataFrame, cat_cols: List[str], num_cols: List[str], columns: List[str]) -> pd.DataFrame:
     df = df.copy()
     for c in ["Pickup Location", "Drop Location"]:
         if c in df.columns:
-            df[c] = compress_categories(df[c].astype(str), top_n=30)
+            df[c] = compress_categories(df[c], top_n=30)
     for c in cat_cols:
         df[c] = df[c].astype(str)
-    X = pd.get_dummies(df[cat_cols], drop_first=False)
-    if num_cols:
-        X = pd.concat([X, df[num_cols].astype(float)], axis=1)
+    X_cat = pd.get_dummies(df[cat_cols], drop_first=False, dummy_na=False)
+    X_num = df[num_cols].apply(pd.to_numeric, errors="coerce") if num_cols else pd.DataFrame(index=df.index)
+    X = pd.concat([X_cat, X_num], axis=1)
     # align to training columns
     for col in columns:
         if col not in X.columns:
             X[col] = 0.0
-    X = X[columns].astype(float)
+    X = X[columns]
+    X = _finalize_matrix(X)
     return X
 
 def zscore_scale(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -314,15 +329,12 @@ def kmeans_numpy(X: np.ndarray, k: int, max_iter: int = 100, random_state: int =
     return labels, centers
 
 def auc_score(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    # rank-based AUC
     order = np.argsort(y_score)
     y = y_true[order]
-    cum_pos = np.cumsum(y)
-    total_pos = cum_pos[-1]
+    total_pos = y.sum()
     total_neg = len(y) - total_pos
     if total_pos == 0 or total_neg == 0:
         return np.nan
-    # sum of ranks for positives
     ranks = np.arange(1, len(y) + 1)
     sum_ranks_pos = (ranks * y).sum()
     auc = (sum_ranks_pos - total_pos * (total_pos + 1) / 2) / (total_pos * total_neg)
@@ -649,69 +661,73 @@ with tabs[7]:
     num_cols = ["hour", "weekday", "month", "is_weekend", "avg_vtat", "ride_distance"]
 
     df_model = df_f[cat_cols + num_cols + ["will_complete"]].copy()
-    X_all, cols = one_hot_fit_transform(df_model, cat_cols, num_cols)
-    y_all = df_model["will_complete"].astype(int).values
+    # guard for tiny or constant targets
+    if len(df_model) < 50 or df_model["will_complete"].nunique() < 2:
+        st.info("Not enough data or target variance for classification after filters.")
+    else:
+        X_all, cols = one_hot_fit_transform(df_model, cat_cols, num_cols)
+        y_all = df_model["will_complete"].astype(int).values
 
-    n = len(X_all)
-    train_idx, test_idx = time_aware_split_idx(n, test_size=0.2)
-    X_train, X_test = X_all.iloc[train_idx].values, X_all.iloc[test_idx].values
-    y_train, y_test = y_all[train_idx], y_all[test_idx]
+        n = len(X_all)
+        train_idx, test_idx = time_aware_split_idx(n, test_size=0.2)
+        X_train, X_test = X_all.iloc[train_idx].values, X_all.iloc[test_idx].values
+        y_train, y_test = y_all[train_idx], y_all[test_idx]
 
-    # Statsmodels GLM
-    X_train_sm = sm.add_constant(X_train, has_constant="add")
-    X_test_sm  = sm.add_constant(X_test,  has_constant="add")
+        # Statsmodels GLM — ensure float64 & finite
+        X_train_sm = sm.add_constant(np.asarray(X_train, dtype=np.float64), has_constant="add")
+        X_test_sm  = sm.add_constant(np.asarray(X_test,  dtype=np.float64), has_constant="add")
 
-    try:
-        glm = sm.GLM(y_train, X_train_sm, family=sm.families.Binomial())
-        res = glm.fit(maxiter=200)
-        y_prob = res.predict(X_test_sm)
-    except Exception as e:
-        st.error(f"GLM failed: {e}")
-        y_prob = np.full_like(y_test, y_test.mean(), dtype=float)
+        try:
+            glm = sm.GLM(y_train.astype(np.float64), X_train_sm, family=sm.families.Binomial())
+            res = glm.fit(maxiter=200)
+            y_prob = np.asarray(res.predict(X_test_sm), dtype=np.float64)
+        except Exception as e:
+            st.error(f"GLM failed: {e}")
+            y_prob = np.full_like(y_test, y_test.mean(), dtype=float)
 
-    y_pred = (y_prob >= 0.5).astype(int)
-    acc = float((y_pred == y_test).mean())
-    f1  = f1_binary(y_test, y_pred)
-    try:
-        auc = auc_score(y_test, y_prob)
-    except Exception:
-        auc = np.nan
+        y_pred = (y_prob >= 0.5).astype(int)
+        acc = float((y_pred == y_test).mean())
+        f1  = f1_binary(y_test, y_pred)
+        try:
+            auc = auc_score(y_test, y_prob)
+        except Exception:
+            auc = np.nan
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Accuracy", f"{acc:.3f}")
-    c2.metric("F1", f"{f1:.3f}")
-    c3.metric("ROC AUC", f"{auc:.3f}" if not np.isnan(auc) else "—")
-    c4.metric("Test Size", f"{len(y_test):,}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Accuracy", f"{acc:.3f}")
+        c2.metric("F1", f"{f1:.3f}")
+        c3.metric("ROC AUC", f"{auc:.3f}" if not np.isnan(auc) else "—")
+        c4.metric("Test Size", f"{len(y_test):,}")
 
-    # Confusion matrix
-    cm = confusion_binary(y_test, y_pred)
-    fig_cm = px.imshow(cm, text_auto=True, color_continuous_scale="Blues", title="Confusion Matrix")
-    fig_cm.update_xaxes(title="Predicted"); fig_cm.update_yaxes(title="Actual")
-    st.plotly_chart(fig_cm, use_container_width=True)
+        # Confusion matrix
+        cm = confusion_binary(y_test, y_pred)
+        fig_cm = px.imshow(cm, text_auto=True, color_continuous_scale="Blues", title="Confusion Matrix")
+        fig_cm.update_xaxes(title="Predicted"); fig_cm.update_yaxes(title="Actual")
+        st.plotly_chart(fig_cm, use_container_width=True)
 
-    # ROC (simple)
-    try:
-        thresholds = np.linspace(0, 1, 101)
-        tprs, fprs = [], []
-        for t in thresholds:
-            yp = (y_prob >= t).astype(int)
-            cm_ = confusion_binary(y_test, yp)
-            tn, fp, fn, tp = cm_[0,0], cm_[0,1], cm_[1,0], cm_[1,1]
-            tprs.append(tp / (tp + fn + 1e-9))
-            fprs.append(fp / (fp + tn + 1e-9))
-        fig, ax = plt.subplots()
-        ax.plot(fprs, tprs, label=f"AUC={auc:.3f}" if not np.isnan(auc) else "AUC=—")
-        ax.plot([0, 1], [0, 1], "--", alpha=0.5)
-        ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate"); ax.set_title("ROC Curve"); ax.legend()
-        st.pyplot(fig, use_container_width=True)
-    except Exception:
-        pass
+        # ROC (simple)
+        try:
+            thresholds = np.linspace(0, 1, 101)
+            tprs, fprs = [], []
+            for t in thresholds:
+                yp = (y_prob >= t).astype(int)
+                cm_ = confusion_binary(y_test, yp)
+                tn, fp, fn, tp = cm_[0,0], cm_[0,1], cm_[1,0], cm_[1,1]
+                tprs.append(tp / (tp + fn + 1e-9))
+                fprs.append(fp / (fp + tn + 1e-9))
+            fig, ax = plt.subplots()
+            ax.plot(fprs, tprs, label=f"AUC={auc:.3f}" if not np.isnan(auc) else "AUC=—")
+            ax.plot([0, 1], [0, 1], "--", alpha=0.5)
+            ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate"); ax.set_title("ROC Curve"); ax.legend()
+            st.pyplot(fig, use_container_width=True)
+        except Exception:
+            pass
 
-    pred_out = df_f.iloc[test_idx][["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
-    pred_out["will_complete_true"] = y_test
-    pred_out["will_complete_pred"] = y_pred
-    pred_out["risk_score"] = 1 - y_prob
-    st.download_button("Download Predictions (CSV)", pred_out.to_csv(index=False).encode("utf-8"), "predictions.csv", "text/csv")
+        pred_out = df_f.iloc[test_idx][["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
+        pred_out["will_complete_true"] = y_test
+        pred_out["will_complete_pred"] = y_pred
+        pred_out["risk_score"] = 1 - y_prob
+        st.download_button("Download Predictions (CSV)", pred_out.to_csv(index=False).encode("utf-8"), "predictions.csv", "text/csv")
 
     # ---------------- B) Forecasting — ARIMA
     st.markdown("---")
@@ -719,17 +735,17 @@ with tabs[7]:
     ts = df_f.set_index("timestamp").resample("D").size().reset_index(name="y").rename(columns={"timestamp": "ds"})
     periods = st.slider("Forecast Horizon (days)", 7, 60, 14)
     try:
-        y = ts.set_index("ds")["y"].asfreq("D").fillna(0)
+        y = ts.set_index("ds")["y"].asfreq("D").fillna(0).astype(float)
         model = sm.tsa.ARIMA(y, order=(2, 1, 2))
         res = model.fit()
         fc = res.get_forecast(steps=periods)
         fc_df = pd.DataFrame({
             "ds": pd.date_range(y.index[-1] + pd.Timedelta(days=1), periods=periods, freq="D"),
-            "yhat": fc.predicted_mean.values
+            "yhat": np.asarray(fc.predicted_mean.values, dtype=np.float64)
         })
         conf = fc.conf_int()
-        fc_df["yhat_lower"] = conf.iloc[:, 0].values
-        fc_df["yhat_upper"] = conf.iloc[:, 1].values
+        fc_df["yhat_lower"] = np.asarray(conf.iloc[:, 0].values, dtype=np.float64)
+        fc_df["yhat_upper"] = np.asarray(conf.iloc[:, 1].values, dtype=np.float64)
         hist = pd.DataFrame({"ds": y.index, "yhat": y.values})
 
         fig = go.Figure()
@@ -767,8 +783,8 @@ with tabs[7]:
 
     payment_cols = [c for c in pm_share.columns if c != "Customer ID"]
     feat_cols = ["freq", "avg_value", "avg_distance", "cancel_rate"] + payment_cols
-    Xc = cust[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0).values
-    Xc_scaled, mu_c, sd_c = zscore_scale(Xc)
+    Xc = cust[feat_cols].apply(pd.to_numeric, errors="coerce").fillna(0).astype(np.float64).values
+    Xc_scaled, _, _ = zscore_scale(Xc)
 
     k = st.slider("K (clusters)", 2, 10, 4)
     labels, centers = kmeans_numpy(Xc_scaled, k=k, random_state=RANDOM_STATE)
@@ -800,48 +816,51 @@ with tabs[7]:
     st.markdown("### D) Regression — Predict Booking Value (OLS)")
 
     df_reg = df_f[cat_cols + num_cols + ["booking_value"]].copy()
-    Xr_all, r_cols = one_hot_fit_transform(df_reg, cat_cols, num_cols)
-    yr_all = df_reg["booking_value"].fillna(0).astype(float).values
+    if len(df_reg) < 50 or df_reg["booking_value"].dropna().empty:
+        st.info("Not enough data for regression after filters.")
+    else:
+        Xr_all, r_cols = one_hot_fit_transform(df_reg, cat_cols, num_cols)
+        yr_all = df_reg["booking_value"].fillna(0).astype(np.float64).values
 
-    n = len(Xr_all)
-    tr_idx, te_idx = time_aware_split_idx(n, test_size=0.2)
-    Xr_train, Xr_test = Xr_all.iloc[tr_idx].values, Xr_all.iloc[te_idx].values
-    yr_train, yr_test = yr_all[tr_idx], yr_all[te_idx]
+        n = len(Xr_all)
+        tr_idx, te_idx = time_aware_split_idx(n, test_size=0.2)
+        Xr_train, Xr_test = Xr_all.iloc[tr_idx].values, Xr_all.iloc[te_idx].values
+        yr_train, yr_test = yr_all[tr_idx], yr_all[te_idx]
 
-    Xr_train_sm = sm.add_constant(Xr_train, has_constant="add")
-    Xr_test_sm  = sm.add_constant(Xr_test,  has_constant="add")
+        Xr_train_sm = sm.add_constant(np.asarray(Xr_train, dtype=np.float64), has_constant="add")
+        Xr_test_sm  = sm.add_constant(np.asarray(Xr_test,  dtype=np.float64), has_constant="add")
 
-    try:
-        ols = sm.OLS(yr_train, Xr_train_sm).fit()
-        yhat = ols.predict(Xr_test_sm)
-    except Exception as e:
-        st.error(f"OLS failed: {e}")
-        yhat = np.full_like(yr_test, yr_train.mean())
+        try:
+            ols = sm.OLS(yr_train, Xr_train_sm).fit()
+            yhat = np.asarray(ols.predict(Xr_test_sm), dtype=np.float64)
+        except Exception as e:
+            st.error(f"OLS failed: {e}")
+            yhat = np.full_like(yr_test, yr_train.mean())
 
-    rmse = float(np.sqrt(np.mean((yr_test - yhat) ** 2)))
-    mae = float(np.mean(np.abs(yr_test - yhat)))
-    ss_res = float(np.sum((yr_test - yhat) ** 2))
-    ss_tot = float(np.sum((yr_test - yr_test.mean()) ** 2))
-    r2 = 1 - ss_res / (ss_tot + 1e-9)
+        rmse = float(np.sqrt(np.mean((yr_test - yhat) ** 2)))
+        mae = float(np.mean(np.abs(yr_test - yhat)))
+        ss_res = float(np.sum((yr_test - yhat) ** 2))
+        ss_tot = float(np.sum((yr_test - yr_test.mean()) ** 2))
+        r2 = 1 - ss_res / (ss_tot + 1e-9)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("RMSE", f"{rmse:,.2f}")
-    c2.metric("MAE", f"{mae:,.2f}")
-    c3.metric("R²", f"{r2:.3f}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("RMSE", f"{rmse:,.2f}")
+        c2.metric("MAE", f"{mae:,.2f}")
+        c3.metric("R²", f"{r2:.3f}")
 
-    st.plotly_chart(px.scatter(x=yr_test, y=yhat, labels={"x": "Actual", "y": "Predicted"}, title="Predicted vs Actual"),
-                    use_container_width=True)
+        st.plotly_chart(px.scatter(x=yr_test, y=yhat, labels={"x": "Actual", "y": "Predicted"}, title="Predicted vs Actual"),
+                        use_container_width=True)
 
-    fig_res, ax = plt.subplots()
-    ax.hist(yr_test - yhat, bins=40)
-    ax.set_title("Residuals")
-    st.pyplot(fig_res, use_container_width=True)
+        fig_res, ax = plt.subplots()
+        ax.hist(yr_test - yhat, bins=40)
+        ax.set_title("Residuals")
+        st.pyplot(fig_res, use_container_width=True)
 
-    regr_out = df_f.iloc[te_idx][["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
-    regr_out["actual_value"] = yr_test
-    regr_out["pred_value"] = yhat
-    st.download_button("Download Regression Predictions (CSV)", regr_out.to_csv(index=False).encode("utf-8"),
-                       "regression_predictions.csv", "text/csv")
+        regr_out = df_f.iloc[te_idx][["Booking ID", "timestamp", "Vehicle Type", "Pickup Location", "Drop Location", "Payment Method"]].copy()
+        regr_out["actual_value"] = yr_test
+        regr_out["pred_value"] = yhat
+        st.download_button("Download Regression Predictions (CSV)", regr_out.to_csv(index=False).encode("utf-8"),
+                           "regression_predictions.csv", "text/csv")
 
 # ---------- Tab 9
 with tabs[8]:
@@ -853,7 +872,6 @@ with tabs[8]:
     ]
     Xf = df_f[fr_cols].fillna(0).replace([np.inf, -np.inf], 0).astype(float).values
     Xf_scaled, _, _ = zscore_scale(Xf)
-    # aggregate absolute z-scores as a simple anomaly score
     scores = np.abs(Xf_scaled).mean(axis=1)
     thresh = st.slider("Anomaly threshold (aggregate Z)", 0.5, 5.0, 2.5, 0.1)
     is_anom = (scores >= thresh).astype(int)
@@ -949,4 +967,4 @@ with tabs[10]:
 
     st.download_button("Download HTML Summary", html.encode("utf-8"), "summary.html", "text/html")
 
-st.caption("© 2025 — Ultra-lean single-file app: no sklearn/prophet/shap. Built for reliability on Streamlit Cloud.")
+st.caption("© 2025 — Ultra-lean single-file app: strict float64 matrices for ML to avoid isfinite errors.")
