@@ -1,7 +1,7 @@
 # app.py
-# Ultra-lean Streamlit app (no scikit-learn / prophet / shap / xgboost / lightgbm).
-# Fix: force all ML matrices to float64 & NaN/Inf-safe to resolve statsmodels isfinite errors.
-
+# Uber NCR 2024 — Analytics & Decision Lab (Lean, Py3.13-friendly)
+# No scikit-learn / shap / prophet / xgboost / lightgbm.
+# GLM (classification), ARIMA (forecast), NumPy KMeans (clustering), OLS (regression).
 from __future__ import annotations
 
 import os
@@ -17,18 +17,17 @@ import matplotlib.pyplot as plt
 import statsmodels.api as sm
 
 # ------------------------------#
-# Constants & Config
+# App Config
 # ------------------------------#
 st.set_page_config(
-    page_title="Uber NCR 2024 — Analytics & Decision Lab (Ultra-Lean)",
+    page_title="Uber NCR 2024 — Analytics & Decision Lab (Lean)",
     page_icon="🚖",
     layout="wide",
 )
-
 RANDOM_STATE = 42
-DATE_COL = "Date"
-TIME_COL = "Time"
+np.random.seed(RANDOM_STATE)
 
+# Schema (strict headers)
 SCHEMA = [
     "Date", "Time", "Booking ID", "Booking Status", "Customer ID", "Vehicle Type",
     "Pickup Location", "Drop Location", "Avg VTAT", "Avg CTAT",
@@ -37,21 +36,20 @@ SCHEMA = [
     "Incomplete Rides", "Incomplete Rides Reason",
     "Booking Value", "Ride Distance", "Driver Ratings", "Customer Rating", "Payment Method"
 ]
-
 CANONICAL_STATUSES = ["Completed", "Customer Cancelled", "Driver Cancelled", "No Driver Found", "Incomplete"]
 
-INSIGHT_COLOR = "#5e60ce"
-DEMAND_COLOR = "#1f77b4"
-RISK_COLOR = "#e76f51"
-FIN_COLOR = "#2a9d8f"
-CX_COLOR = "#9b5de5"
-
-np.random.seed(RANDOM_STATE)
+COLORS = {
+    "insight": "#5e60ce",
+    "demand": "#1f77b4",
+    "risk": "#e76f51",
+    "finance": "#2a9d8f",
+    "cx": "#9b5de5",
+}
 
 # ------------------------------#
-# Utilities
+# Helpers
 # ------------------------------#
-def _title_case_or_nan(x: any) -> Optional[str]:
+def _title_case_or_nan(x) -> Optional[str]:
     if pd.isna(x):
         return np.nan
     s = str(x).strip()
@@ -62,16 +60,17 @@ def _title_case_or_nan(x: any) -> Optional[str]:
 def time_bucket_from_hour(h: int) -> str:
     if 5 <= h < 12:
         return "Morning (05–11)"
-    elif 12 <= h < 17:
+    if 12 <= h < 17:
         return "Afternoon (12–16)"
-    elif 17 <= h < 21:
+    if 17 <= h < 21:
         return "Evening (17–20)"
-    else:
-        return "Night (21–04)"
+    return "Night (21–04)"
 
 def compress_categories(s: pd.Series, top_n: int = 30, other_label: str = "Other") -> pd.Series:
-    s = s.astype(str)
-    top = s.value_counts().nlargest(top_n).index
+    # robust: handle non-string and NaN
+    s = s.astype("string").fillna("Unknown")
+    counts = s.value_counts(dropna=False)
+    top = counts.nlargest(top_n).index
     return s.where(s.isin(top), other_label)
 
 def safe_numeric(s: pd.Series) -> pd.Series:
@@ -79,22 +78,25 @@ def safe_numeric(s: pd.Series) -> pd.Series:
 
 def canonical_status(row: pd.Series) -> str:
     raw = str(row.get("Booking Status", "")).strip()
-    cust_cxl = row.get("Cancelled Rides by Customer", 0)
-    drv_cxl = row.get("Cancelled Rides by Driver", 0)
-    inc = row.get("Incomplete Rides", 0)
-    if raw.lower() == "completed":
-        return "Completed"
-    if pd.to_numeric(pd.Series([cust_cxl]), errors="coerce").iloc[0] > 0 or "customer" in raw.lower():
-        return "Customer Cancelled"
-    if pd.to_numeric(pd.Series([drv_cxl]), errors="coerce").iloc[0] > 0 or "driver" in raw.lower():
-        return "Driver Cancelled"
-    if "no driver found" in raw.lower():
-        return "No Driver Found"
-    if pd.to_numeric(pd.Series([inc]), errors="coerce").iloc[0] > 0 or "incomplete" in raw.lower():
-        return "Incomplete"
-    return raw if raw in CANONICAL_STATUSES else raw
+    cust_cxl = pd.to_numeric(pd.Series([row.get("Cancelled Rides by Customer", 0)]), errors="coerce").iloc[0] or 0
+    drv_cxl  = pd.to_numeric(pd.Series([row.get("Cancelled Rides by Driver", 0)]), errors="coerce").iloc[0] or 0
+    inc      = pd.to_numeric(pd.Series([row.get("Incomplete Rides", 0)]), errors="coerce").iloc[0] or 0
 
-def revenue_mask_for_completed(status: pd.Series) -> pd.Series:
+    low = raw.lower()
+    if low == "completed":
+        return "Completed"
+    if "no driver found" in low:
+        return "No Driver Found"
+    if "incomplete" in low or inc > 0:
+        return "Incomplete"
+    if "customer" in low or cust_cxl > 0:
+        return "Customer Cancelled"
+    if "driver" in low or drv_cxl > 0:
+        return "Driver Cancelled"
+    # default: keep original (but downstream treated as non-completed)
+    return raw
+
+def revenue_mask(status: pd.Series) -> pd.Series:
     return status == "Completed"
 
 def find_default_csv() -> Optional[str]:
@@ -126,9 +128,11 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     msgs: List[str] = []
     df = df.copy()
 
-    # Parse Date/Time -> timestamp
-    df["parsed_date"] = pd.to_datetime(df[DATE_COL], dayfirst=True, errors="coerce")
-    df["parsed_time"] = pd.to_datetime(df[TIME_COL], format="%H:%M:%S", errors="coerce").dt.time
+    # Parse Date & Time -> timestamp
+    df["parsed_date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+    # Time may be string "HH:MM:SS" — parse to .dt.time safely
+    t_parsed = pd.to_datetime(df["Time"], format="%H:%M:%S", errors="coerce")
+    df["parsed_time"] = t_parsed.dt.time
 
     def build_ts(r):
         if pd.isna(r["parsed_date"]) or pd.isna(r["parsed_time"]):
@@ -136,9 +140,9 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         return pd.Timestamp.combine(r["parsed_date"].date(), r["parsed_time"])
 
     df["timestamp"] = df.apply(build_ts, axis=1)
-    invalid = int(df["timestamp"].isna().sum())
-    if invalid > 0:
-        msgs.append(f"⚠️ Dropped {invalid} rows with invalid Date/Time.")
+    bad = int(df["timestamp"].isna().sum())
+    if bad:
+        msgs.append(f"⚠️ Dropped {bad} rows with invalid Date/Time.")
     df = df.dropna(subset=["timestamp"]).reset_index(drop=True)
 
     # Features
@@ -148,7 +152,7 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     df["is_weekend"] = df["weekday"].isin([5, 6]).astype(int)
     df["time_bucket"] = df["hour"].apply(time_bucket_from_hour)
 
-    # Numerics
+    # Numeric casts
     rename_map = {
         "Avg VTAT": "avg_vtat",
         "Avg CTAT": "avg_ctat",
@@ -160,19 +164,19 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         "Driver Ratings": "driver_ratings",
         "Customer Rating": "customer_rating",
     }
-    for k, v in rename_map.items():
-        df[v] = safe_numeric(df[k])
+    for src, dst in rename_map.items():
+        df[dst] = safe_numeric(df[src])
 
-    # Reasons
-    df["reason_customer"] = df["Reason for cancelling by Customer"].map(_title_case_or_nan)
-    df["reason_driver"] = df["Driver Cancellation Reason"].map(_title_case_or_nan)
-    df["reason_incomplete"] = df["Incomplete Rides Reason"].map(_title_case_or_nan)
+    # Clean reason text
+    df["reason_customer"]  = df["Reason for cancelling by Customer"].map(_title_case_or_nan)
+    df["reason_driver"]    = df["Driver Cancellation Reason"].map(_title_case_or_nan)
+    df["reason_incomplete"]= df["Incomplete Rides Reason"].map(_title_case_or_nan)
 
-    # Canonical status & target
+    # Canonical booking status & target
     df["booking_status_canon"] = df.apply(canonical_status, axis=1)
     df["will_complete"] = (df["booking_status_canon"] == "Completed").astype(int)
 
-    # Categories
+    # Make categorical
     for c in ["Booking Status", "booking_status_canon", "Vehicle Type", "Pickup Location",
               "Drop Location", "Payment Method", "time_bucket"]:
         df[c] = df[c].astype("category")
@@ -186,31 +190,15 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
 def insight_box(text: str):
     st.markdown(
         f"""
-        <div style="border-left:6px solid {INSIGHT_COLOR}; padding:0.6rem 0.8rem; background:#f7f7ff; border-radius:6px;">
+        <div style="border-left:6px solid {COLORS['insight']}; padding:0.6rem 0.8rem; background:#f7f7ff; border-radius:6px;">
         <strong>Insight</strong><br>{text}
         </div>
-        """, unsafe_allow_html=True
+        """,
+        unsafe_allow_html=True,
     )
 
-def kpi_cards(df: pd.DataFrame):
-    total = len(df)
-    comp = int((df["booking_status_canon"] == "Completed").sum())
-    cust_cxl = int((df["booking_status_canon"] == "Customer Cancelled").sum())
-    drv_cxl = int((df["booking_status_canon"] == "Driver Cancelled").sum())
-    avg_drv = df["driver_ratings"].replace(0, np.nan).mean()
-    avg_cus = df["customer_rating"].replace(0, np.nan).mean()
-    revenue = df.loc[revenue_mask_for_completed(df["booking_status_canon"]), "booking_value"].sum()
-
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Total Bookings", f"{total:,}")
-    c2.metric("Completion %", f"{(comp/total*100) if total else 0:.1f}%")
-    c3.metric("Customer Cancel %", f"{(cust_cxl/total*100) if total else 0:.1f}%")
-    c4.metric("Driver Cancel %", f"{(drv_cxl/total*100) if total else 0:.1f}%")
-    c5.metric("Avg Driver Rating", f"{avg_drv:.2f}" if not np.isnan(avg_drv) else "—")
-    c6.metric("Avg Customer Rating", f"{avg_cus:.2f}" if not np.isnan(avg_cus) else "—")
-    c7.metric("Total Revenue (Completed)", f"₹ {revenue:,.0f}")
-
-def bar_from_series(series: pd.Series, title: str, x_label: str = None, y_label: str = "Count", color=DEMAND_COLOR):
+def bar_from_series(series: pd.Series, title: str, x_label: str = None, y_label: str = "Count", color=None):
+    color = color or COLORS["demand"]
     dfp = series.reset_index()
     dfp.columns = [x_label or series.index.name or "Category", y_label]
     fig = px.bar(dfp, x=dfp.columns[0], y=dfp.columns[1], title=title, color_discrete_sequence=[color])
@@ -230,7 +218,7 @@ def filter_block(df: pd.DataFrame) -> pd.DataFrame:
     pm = st.sidebar.multiselect("Payment Method", sorted(df["Payment Method"].dropna().unique().tolist()))
     if pm: df = df[df["Payment Method"].isin(pm)]
 
-    bs = st.sidebar.multiselect("Booking Status", sorted(df["booking_status_canon"].dropna().unique().tolist()))
+    bs = st.sidebar.multiselect("Booking Status (canonical)", sorted(df["booking_status_canon"].dropna().unique().tolist()))
     if bs: df = df[df["booking_status_canon"].isin(bs)]
 
     pls = st.sidebar.multiselect("Pickup Location", sorted(df["Pickup Location"].dropna().unique().tolist()))
@@ -252,12 +240,9 @@ def empty_state(df: pd.DataFrame) -> bool:
 # ------------------------------#
 def time_aware_split_idx(n: int, test_size: float = 0.2):
     cut = int((1 - test_size) * n)
-    train_idx = np.arange(0, cut)
-    test_idx  = np.arange(cut, n)
-    return train_idx, test_idx
+    return np.arange(0, cut), np.arange(cut, n)
 
 def _finalize_matrix(X: pd.DataFrame) -> pd.DataFrame:
-    """Ensure matrix is strictly float64 with no NaN/Inf/object."""
     X = X.replace([np.inf, -np.inf], np.nan)
     X = X.apply(pd.to_numeric, errors="coerce")
     X = X.fillna(0.0).astype(np.float64)
@@ -265,12 +250,11 @@ def _finalize_matrix(X: pd.DataFrame) -> pd.DataFrame:
 
 def one_hot_fit_transform(df: pd.DataFrame, cat_cols: List[str], num_cols: List[str]) -> Tuple[pd.DataFrame, List[str]]:
     df = df.copy()
-    # compress high-cardinality cats
     for c in ["Pickup Location", "Drop Location"]:
         if c in df.columns:
             df[c] = compress_categories(df[c], top_n=30)
     for c in cat_cols:
-        df[c] = df[c].astype(str)
+        df[c] = df[c].astype("string").fillna("Unknown")
     X_cat = pd.get_dummies(df[cat_cols], drop_first=False, dummy_na=False)
     X_num = df[num_cols].apply(pd.to_numeric, errors="coerce") if num_cols else pd.DataFrame(index=df.index)
     X = pd.concat([X_cat, X_num], axis=1)
@@ -283,11 +267,10 @@ def one_hot_transform(df: pd.DataFrame, cat_cols: List[str], num_cols: List[str]
         if c in df.columns:
             df[c] = compress_categories(df[c], top_n=30)
     for c in cat_cols:
-        df[c] = df[c].astype(str)
+        df[c] = df[c].astype("string").fillna("Unknown")
     X_cat = pd.get_dummies(df[cat_cols], drop_first=False, dummy_na=False)
     X_num = df[num_cols].apply(pd.to_numeric, errors="coerce") if num_cols else pd.DataFrame(index=df.index)
     X = pd.concat([X_cat, X_num], axis=1)
-    # align to training columns
     for col in columns:
         if col not in X.columns:
             X[col] = 0.0
@@ -304,24 +287,20 @@ def kmeans_numpy(X: np.ndarray, k: int, max_iter: int = 100, random_state: int =
     rng = np.random.default_rng(random_state)
     n = X.shape[0]
     # kmeans++ init
-    centers = []
-    centers.append(X[rng.integers(0, n)])
+    centers = [X[rng.integers(0, n)]]
     for _ in range(1, k):
         dists = np.min(((X[:, None, :] - np.array(centers)[None, :, :]) ** 2).sum(axis=2), axis=1)
         probs = dists / (dists.sum() + 1e-9)
-        idx = rng.choice(n, p=probs)
-        centers.append(X[idx])
+        centers.append(X[rng.choice(n, p=probs)])
     centers = np.array(centers)
 
     labels = np.zeros(n, dtype=int)
     for _ in range(max_iter):
-        # assign
         d2 = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
         new_labels = np.argmin(d2, axis=1)
         if np.all(new_labels == labels):
             break
         labels = new_labels
-        # update
         for j in range(k):
             pts = X[labels == j]
             if len(pts) > 0:
@@ -360,9 +339,9 @@ def pca_numpy(X: np.ndarray, n_components: int = 2) -> np.ndarray:
     return Xc @ Vt.T[:, :n_components]
 
 # ------------------------------#
-# Sidebar — data input
+# Sidebar — data source
 # ------------------------------#
-st.sidebar.title("🚖 Uber NCR 2024 — Analytics & Decision Lab (Ultra-Lean)")
+st.sidebar.title("🚖 Uber NCR 2024 — Analytics & Decision Lab (Lean)")
 st.sidebar.markdown("**Data Source**")
 source = st.sidebar.radio("Choose source", ["Auto-detect file", "Upload CSV"], index=0)
 
@@ -388,21 +367,23 @@ df, load_msgs = preprocess(df_raw)
 for m in load_msgs:
     st.warning(m)
 
-# Sidebar filters & downloads
+# Global filters
 df_f = filter_block(df)
 if empty_state(df_f):
     st.stop()
 
+# Quick download
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Downloads**")
-st.sidebar.download_button("Download Filtered Data (CSV)", df_f.to_csv(index=False).encode("utf-8"), "filtered_data.csv", "text/csv")
+st.sidebar.download_button("Download Filtered Data (CSV)", df_f.to_csv(index=False).encode("utf-8"),
+                           "filtered_data.csv", "text/csv")
 
+# Model choices (labels only; logic uses lean stack)
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 Model Preferences (Lean)")
-clf_choice = st.sidebar.selectbox("Classifier", ["Logistic (GLM)"], index=0)
-fcast_choice = st.sidebar.selectbox("Forecaster", ["ARIMA"], index=0)
-clus_choice = st.sidebar.selectbox("Clustering", ["K-Means (NumPy)"], index=0)
-regr_choice = st.sidebar.selectbox("Regressor", ["OLS"], index=0)
+st.sidebar.selectbox("Classifier", ["GLM (Logit)"], index=0)
+st.sidebar.selectbox("Forecaster", ["ARIMA"], index=0)
+st.sidebar.selectbox("Clustering", ["K-Means (NumPy)"], index=0)
+st.sidebar.selectbox("Regressor", ["OLS"], index=0)
 
 # ------------------------------#
 # Tabs
@@ -418,13 +399,29 @@ tabs = st.tabs([
     "8) ML Lab",
     "9) Risk & Fraud",
     "10) Operations Simulator",
-    "11) Reports & Exports"
+    "11) Reports & Exports",
 ])
 
 # ---------- Tab 1
 with tabs[0]:
     st.markdown("## Executive Overview")
-    kpi_cards(df_f)
+
+    total = len(df_f)
+    comp = int((df_f["booking_status_canon"] == "Completed").sum())
+    cust_cxl = int((df_f["booking_status_canon"] == "Customer Cancelled").sum())
+    drv_cxl = int((df_f["booking_status_canon"] == "Driver Cancelled").sum())
+    avg_drv = df_f["driver_ratings"].replace(0, np.nan).mean()
+    avg_cus = df_f["customer_rating"].replace(0, np.nan).mean()
+    revenue = df_f.loc[revenue_mask(df_f["booking_status_canon"]), "booking_value"].sum()
+
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("Total Bookings", f"{total:,}")
+    c2.metric("Completion %", f"{(comp/total*100) if total else 0:.1f}%")
+    c3.metric("Customer Cancel %", f"{(cust_cxl/total*100) if total else 0:.1f}%")
+    c4.metric("Driver Cancel %", f"{(drv_cxl/total*100) if total else 0:.1f}%")
+    c5.metric("Avg Driver Rating", f"{avg_drv:.2f}" if not np.isnan(avg_drv) else "—")
+    c6.metric("Avg Customer Rating", f"{avg_cus:.2f}" if not np.isnan(avg_cus) else "—")
+    c7.metric("Total Revenue (Completed)", f"₹ {revenue:,.0f}")
 
     st.markdown("---")
     base = df_f.set_index("timestamp").assign(
@@ -437,9 +434,9 @@ with tabs[0]:
         s = base.resample("W-SUN").agg(bookings=("Booking ID", "count"), revenue=("revenue", "sum"))
     s = s.reset_index()
     st.plotly_chart(px.line(s, x="timestamp", y="bookings", title="Bookings Over Time", markers=True,
-                            color_discrete_sequence=[DEMAND_COLOR]), use_container_width=True)
+                            color_discrete_sequence=[COLORS["demand"]]), use_container_width=True)
     st.plotly_chart(px.line(s, x="timestamp", y="revenue", title="Revenue Over Time (Completed)", markers=True,
-                            color_discrete_sequence=[FIN_COLOR]), use_container_width=True)
+                            color_discrete_sequence=[COLORS["finance"]]), use_container_width=True)
 
     st.markdown("---")
     total = len(df_f)
@@ -456,8 +453,12 @@ with tabs[0]:
         rows = []
         for c in ["ride_distance", "booking_value", "driver_ratings", "customer_rating"]:
             s = df_f[c].replace(0, np.nan)
-            rows.append({"Metric": c.replace("_", " ").title(), "Mean": np.nanmean(s), "Median": np.nanmedian(s),
-                         "Mode": (s.mode().iloc[0] if s.dropna().size else np.nan)})
+            rows.append({
+                "Metric": c.replace("_", " ").title(),
+                "Mean": np.nanmean(s),
+                "Median": np.nanmedian(s),
+                "Mode": (s.mode().iloc[0] if s.dropna().size else np.nan),
+            })
         st.dataframe(pd.DataFrame(rows).round(2), use_container_width=True)
     with c2:
         st.markdown("### Top Frequencies")
@@ -465,9 +466,10 @@ with tabs[0]:
         bar_from_series(df_f["Pickup Location"].value_counts().head(10), "Pickup Location (Top 10)", "Pickup Location")
         bar_from_series(df_f["Payment Method"].value_counts().head(10), "Payment Method (Top 10)", "Payment Method")
 
-    spike = df_f.groupby("time_bucket")["Booking ID"].count().sort_values(ascending=False).head(1)
+    spike = (df_f.groupby("time_bucket")["Booking ID"].count()
+             .sort_values(ascending=False).head(1))
     if len(spike) > 0:
-        insight_box(f"**Demand peaks in {spike.index[0]}**. Rebalance supply/incentives to curb 'No Driver Found' & cancellations.")
+        insight_box(f"**Demand peaks in {spike.index[0]}** — rebalance supply & incentives to curb 'No Driver Found' and cancellations.")
 
 # ---------- Tab 2
 with tabs[1]:
@@ -491,9 +493,9 @@ with tabs[1]:
     rd = df_f["reason_driver"].value_counts().head(15)
     ri = df_f["reason_incomplete"].value_counts().head(15)
     co1, co2, co3 = st.columns(3)
-    with co1: bar_from_series(rc, "Customer Reasons", "Reason", color=RISK_COLOR)
-    with co2: bar_from_series(rd, "Driver Reasons", "Reason", color=RISK_COLOR)
-    with co3: bar_from_series(ri, "Incomplete Reasons", "Reason", color=RISK_COLOR)
+    with co1: bar_from_series(rc, "Customer Reasons", "Reason", color=COLORS["risk"])
+    with co2: bar_from_series(rd, "Driver Reasons", "Reason", color=COLORS["risk"])
+    with co3: bar_from_series(ri, "Incomplete Reasons", "Reason", color=COLORS["risk"])
 
     st.markdown("---")
     st.markdown("### Cancellation Rate by Vehicle / Time Bucket / Pickup")
@@ -509,7 +511,7 @@ with tabs[1]:
     bar_from_series(by_pickup, "Cancellation Rate by Pickup (Top 20)", "Pickup Location", "Rate")
 
     if len(by_vehicle) and len(by_bucket):
-        insight_box(f"Highest cancellation propensity: **{by_vehicle.index[0]}** × **{by_bucket.index[0]}**. Target policies & VTAT caps here.")
+        insight_box(f"Highest cancellation propensity: **{by_vehicle.index[0]}** × **{by_bucket.index[0]}**.")
 
 # ---------- Tab 3
 with tabs[2]:
@@ -521,11 +523,11 @@ with tabs[2]:
     with c1:
         st.dataframe(top_pick, use_container_width=True)
         st.plotly_chart(px.bar(top_pick, x="Pickup Location", y="count", title="Top Pickups",
-                               color_discrete_sequence=[DEMAND_COLOR]), use_container_width=True)
+                               color_discrete_sequence=[COLORS["demand"]]), use_container_width=True)
     with c2:
         st.dataframe(top_drop, use_container_width=True)
         st.plotly_chart(px.bar(top_drop, x="Drop Location", y="count", title="Top Drops",
-                               color_discrete_sequence=[DEMAND_COLOR]), use_container_width=True)
+                               color_discrete_sequence=[COLORS["demand"]]), use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Peak Patterns")
@@ -534,11 +536,11 @@ with tabs[2]:
     c3, c4 = st.columns(2)
     with c3:
         st.plotly_chart(px.bar(hh, title="By Hour of Day", labels={"index": "Hour", "value": "Trips"},
-                               color_discrete_sequence=[DEMAND_COLOR]), use_container_width=True)
+                               color_discrete_sequence=[COLORS["demand"]]), use_container_width=True)
     with c4:
         dow_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
         st.plotly_chart(px.bar(dow.rename(index=dow_map), title="By Day of Week", labels={"index": "Day", "value": "Trips"},
-                               color_discrete_sequence=[DEMAND_COLOR]), use_container_width=True)
+                               color_discrete_sequence=[COLORS["demand"]]), use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Category Heat Tables")
@@ -558,17 +560,17 @@ with tabs[3]:
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(px.histogram(df_f, x="avg_vtat", nbins=40, title="Avg VTAT",
-                                     color_discrete_sequence=[RISK_COLOR]), use_container_width=True)
+                                     color_discrete_sequence=[COLORS["risk"]]), use_container_width=True)
     with c2:
         st.plotly_chart(px.histogram(df_f, x="avg_ctat", nbins=40, title="Avg CTAT",
-                                     color_discrete_sequence=[RISK_COLOR]), use_container_width=True)
+                                     color_discrete_sequence=[COLORS["risk"]]), use_container_width=True)
 
     st.markdown("---")
     st.markdown("### By Location & Vehicle (Top 30 by volume)")
     gv = df_f.groupby(["Pickup Location", "Vehicle Type"], observed=False).agg(
         vt=("avg_vtat", "mean"),
         ct=("avg_ctat", "mean"),
-        n=("Booking ID", "count")
+        n=("Booking ID", "count"),
     ).reset_index().sort_values("n", ascending=False).head(30)
     st.dataframe(gv.round(2), use_container_width=True)
 
@@ -591,7 +593,7 @@ with tabs[3]:
 # ---------- Tab 5
 with tabs[4]:
     st.markdown("## Financial Analysis")
-    rev_mask = revenue_mask_for_completed(df_f["booking_status_canon"])
+    rev_mask = revenue_mask(df_f["booking_status_canon"])
     total_rev = df_f.loc[rev_mask, "booking_value"].sum()
     completed_count = int(rev_mask.sum())
     arpr = (total_rev / completed_count) if completed_count else 0.0
@@ -608,7 +610,8 @@ with tabs[4]:
                            color_discrete_sequence=px.colors.qualitative.Set2), use_container_width=True)
 
     st.markdown("---")
-    st.plotly_chart(px.scatter(df_f[rev_mask], x="ride_distance", y="booking_value", color="Vehicle Type",
+    df_scatter = df_f[rev_mask][["ride_distance", "booking_value", "Vehicle Type"]].dropna()
+    st.plotly_chart(px.scatter(df_scatter, x="ride_distance", y="booking_value", color="Vehicle Type",
                                trendline="ols", title="Booking Value vs Ride Distance"),
                     use_container_width=True)
 
@@ -618,10 +621,10 @@ with tabs[5]:
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(px.histogram(df_f, x="driver_ratings", nbins=20, title="Driver Ratings",
-                                     color_discrete_sequence=[CX_COLOR]), use_container_width=True)
+                                     color_discrete_sequence=[COLORS["cx"]]), use_container_width=True)
     with c2:
         st.plotly_chart(px.histogram(df_f, x="customer_rating", nbins=20, title="Customer Ratings",
-                                     color_discrete_sequence=[CX_COLOR]), use_container_width=True)
+                                     color_discrete_sequence=[COLORS["cx"]]), use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Correlations & Low-Rating Risk")
@@ -641,12 +644,15 @@ with tabs[6]:
     inc_df = df_f[df_f["booking_status_canon"] == "Incomplete"]
     share = len(inc_df) / len(df_f) if len(df_f) else 0
     st.metric("Incomplete Share", f"{share:.2%}")
-    bar_from_series(inc_df["reason_incomplete"].value_counts().head(20), "Top Incomplete Reasons", "Reason", color=RISK_COLOR)
-    c1, c2 = st.columns(2)
-    with c1:
-        bar_from_series(inc_df["Pickup Location"].value_counts().head(20), "Incomplete by Pickup (Top 20)", "Pickup Location", color=DEMAND_COLOR)
-    with c2:
-        bar_from_series(inc_df["Vehicle Type"].value_counts().head(20), "Incomplete by Vehicle", "Vehicle Type", color=DEMAND_COLOR)
+    if not inc_df.empty:
+        bar_from_series(inc_df["reason_incomplete"].value_counts().head(20), "Top Incomplete Reasons", "Reason", color=COLORS["risk"])
+        c1, c2 = st.columns(2)
+        with c1:
+            bar_from_series(inc_df["Pickup Location"].value_counts().head(20), "Incomplete by Pickup (Top 20)", "Pickup Location", color=COLORS["demand"])
+        with c2:
+            bar_from_series(inc_df["Vehicle Type"].value_counts().head(20), "Incomplete by Vehicle", "Vehicle Type", color=COLORS["demand"])
+    else:
+        st.info("No incomplete rides in the filtered data.")
 
 # ------------------------------#
 # Tab 8 — ML Lab (lean, no sklearn)
@@ -661,7 +667,6 @@ with tabs[7]:
     num_cols = ["hour", "weekday", "month", "is_weekend", "avg_vtat", "ride_distance"]
 
     df_model = df_f[cat_cols + num_cols + ["will_complete"]].copy()
-    # guard for tiny or constant targets
     if len(df_model) < 50 or df_model["will_complete"].nunique() < 2:
         st.info("Not enough data or target variance for classification after filters.")
     else:
@@ -673,7 +678,6 @@ with tabs[7]:
         X_train, X_test = X_all.iloc[train_idx].values, X_all.iloc[test_idx].values
         y_train, y_test = y_all[train_idx], y_all[test_idx]
 
-        # Statsmodels GLM — ensure float64 & finite
         X_train_sm = sm.add_constant(np.asarray(X_train, dtype=np.float64), has_constant="add")
         X_test_sm  = sm.add_constant(np.asarray(X_test,  dtype=np.float64), has_constant="add")
 
@@ -705,7 +709,7 @@ with tabs[7]:
         fig_cm.update_xaxes(title="Predicted"); fig_cm.update_yaxes(title="Actual")
         st.plotly_chart(fig_cm, use_container_width=True)
 
-        # ROC (simple)
+        # ROC
         try:
             thresholds = np.linspace(0, 1, 101)
             tprs, fprs = [], []
@@ -741,7 +745,7 @@ with tabs[7]:
         fc = res.get_forecast(steps=periods)
         fc_df = pd.DataFrame({
             "ds": pd.date_range(y.index[-1] + pd.Timedelta(days=1), periods=periods, freq="D"),
-            "yhat": np.asarray(fc.predicted_mean.values, dtype=np.float64)
+            "yhat": np.asarray(fc.predicted_mean.values, dtype=np.float64),
         })
         conf = fc.conf_int()
         fc_df["yhat_lower"] = np.asarray(conf.iloc[:, 0].values, dtype=np.float64)
@@ -868,7 +872,7 @@ with tabs[8]:
     fr_cols = [
         "avg_vtat", "avg_ctat", "ride_distance", "booking_value",
         "hour", "weekday", "is_weekend",
-        "cancelled_by_customer", "cancelled_by_driver", "incomplete_rides"
+        "cancelled_by_customer", "cancelled_by_driver", "incomplete_rides",
     ]
     Xf = df_f[fr_cols].fillna(0).replace([np.inf, -np.inf], 0).astype(float).values
     Xf_scaled, _, _ = zscore_scale(Xf)
@@ -927,7 +931,7 @@ with tabs[9]:
     compare = pd.DataFrame({
         "Metric": ["Total Bookings", "Completion Rate", "Completed Rides", "ARPR", "Total Revenue", "Avg Customer Rating"],
         "Baseline": [base_total, base_comp_rate, base_complete, base_arpr, base_rev, base_rating],
-        "Scenario": [scen_total, scen_comp_rate, scen_completed, scen_arpr, scen_rev, scen_rating]
+        "Scenario": [scen_total, scen_comp_rate, scen_completed, scen_arpr, scen_rev, scen_rating],
     })
     st.dataframe(compare.style.format({"Baseline": "{:,.2f}", "Scenario": "{:,.2f}"}).hide(axis="index"), use_container_width=True)
     st.plotly_chart(px.bar(compare, x="Metric", y=["Baseline", "Scenario"], barmode="group", title="Baseline vs Scenario",
@@ -967,4 +971,4 @@ with tabs[10]:
 
     st.download_button("Download HTML Summary", html.encode("utf-8"), "summary.html", "text/html")
 
-st.caption("© 2025 — Ultra-lean single-file app: strict float64 matrices for ML to avoid isfinite errors.")
+st.caption("© 2025 — Lean single-file app: strict float64 matrices for ML to avoid isfinite errors; no scikit-learn imports.")
