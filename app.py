@@ -93,7 +93,6 @@ def canonical_status(row: pd.Series) -> str:
         return "Customer Cancelled"
     if "driver" in low or drv_cxl > 0:
         return "Driver Cancelled"
-    # default: keep original (but downstream treated as non-completed)
     return raw
 
 def revenue_mask(status: pd.Series) -> pd.Series:
@@ -130,7 +129,6 @@ def preprocess(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
 
     # Parse Date & Time -> timestamp
     df["parsed_date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
-    # Time may be string "HH:MM:SS" — parse to .dt.time safely
     t_parsed = pd.to_datetime(df["Time"], format="%H:%M:%S", errors="coerce")
     df["parsed_time"] = t_parsed.dt.time
 
@@ -703,13 +701,11 @@ with tabs[7]:
         c3.metric("ROC AUC", f"{auc:.3f}" if not np.isnan(auc) else "—")
         c4.metric("Test Size", f"{len(y_test):,}")
 
-        # Confusion matrix
         cm = confusion_binary(y_test, y_pred)
         fig_cm = px.imshow(cm, text_auto=True, color_continuous_scale="Blues", title="Confusion Matrix")
         fig_cm.update_xaxes(title="Predicted"); fig_cm.update_yaxes(title="Actual")
         st.plotly_chart(fig_cm, use_container_width=True)
 
-        # ROC
         try:
             thresholds = np.linspace(0, 1, 101)
             tprs, fprs = [], []
